@@ -187,14 +187,14 @@ Ctrl+C прерывает текущий ответ, Ctrl+D — выход.
 либо укажите папку `loca/vim` менеджеру плагинов):
 
 ```vim
-set runtimepath+=~/Downloads/loca/vim
+set runtimepath+=~/Documents/loca/vim
 ```
 
 Готовый блок с настройками: `vim/vimrc.snippet` — можно дописать целиком:
-`cat ~/Downloads/loca/vim/vimrc.snippet >> ~/.vimrc`.
+`cat ~/Documents/loca/vim/vimrc.snippet >> ~/.vimrc`.
 
 Вариант вообще без правки `~/.vimrc`: Vim сам сканирует `~/.vim/plugin/*.vim`, поэтому достаточно
-положить туда загрузчик из репозитория — `cp ~/Downloads/loca/vim/loader.vim ~/.vim/plugin/loca.vim`.
+положить туда загрузчик из репозитория — `cp ~/Documents/loca/vim/loader.vim ~/.vim/plugin/loca.vim`.
 Он добавляет `loca/vim` в `runtimepath` и делает `source` плагина, так что правки в репозитории
 подхватываются сразу, а отключается всё удалением одного файла.
 

@@ -4,7 +4,7 @@
 
 ## Что это
 
-`~/Downloads/loca` — терминальный агент для кода поверх Ollama, аналог Claude Code, чистый Python,
+`~/Documents/loca` — терминальный агент для кода поверх Ollama, аналог Claude Code, чистый Python,
 без зависимостей. Машина: MacBook Air, 8 ГБ. Модель по умолчанию в `~/.loca/config.json` —
 `qwen3.5:4b`, num_ctx 16384 (профиль 9b лежит рядом в `config.json.9b`: 9b на 8 ГБ впритык).
 Запуск: `loca` (обёртка `~/.local/bin/loca` → `python3 -m loca` из репозитория), из Vim — `:Loca`.
