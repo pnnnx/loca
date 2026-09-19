@@ -60,7 +60,7 @@ loca                           # запуск в папке проекта
 
 ```sh
 #!/bin/sh
-LOCA_REPO="${LOCA_REPO:-$HOME/Downloads/loca}"
+LOCA_REPO="${LOCA_REPO:-$HOME/Documents/loca}"
 PYTHONPATH="$LOCA_REPO${PYTHONPATH:+:$PYTHONPATH}" exec "${LOCA_PYTHON:-python3}" -m loca "$@"
 ```
 
