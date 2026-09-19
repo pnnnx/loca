@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loca"
+version = "0.1.0"
+description = "Claude Code-like terminal coding agent for local models via Ollama"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+loca = "loca.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["loca*"]

@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# тесты и инструменты
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# macOS
+.DS_Store
+
+# состояние агента и прогоны бенчмарка (результаты — по желанию, см. ниже)
+.loca/
+.loca_home/
+.loca_backup_*/
+*.loca_stats.json
+
+# временные копии прошлых итераций
+loca_plan_update.py
+Claude outputs/
+
+# vim
+*.sw[a-p]
+*.swp
+*.swo
+.*.sw[a-p]
+*_py.sw[a-p]

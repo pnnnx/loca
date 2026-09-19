@@ -1,0 +1,89 @@
+{
+  "model": "qwen3.5:4b",
+  "ctx": null,
+  "when": "2026-09-18 23:18",
+  "results": [
+    {
+      "name": "hard_width_option",
+      "passed": false,
+      "reason": "таймаут 900s",
+      "seconds": 900.0,
+      "partial": 1,
+      "partial_total": 3,
+      "partial_failed": [
+        "format_row обрезает",
+        "флаг --width в CLI"
+      ]
+    },
+    {
+      "name": "hard_rename_package",
+      "passed": false,
+      "reason": "таймаут 900s",
+      "seconds": 900.0,
+      "partial": 3,
+      "partial_total": 5,
+      "partial_failed": [
+        "реэкспорт обновлён",
+        "зелено после переименования"
+      ]
+    },
+    {
+      "name": "hard_extract_module",
+      "passed": true,
+      "reason": "",
+      "seconds": 124.4,
+      "requests": 8,
+      "steps": 8,
+      "tokens_in": 37571,
+      "tokens_out": 1033,
+      "model_seconds": 122.96,
+      "tools": {
+        "bash": 1,
+        "edit_file": 2,
+        "list_dir": 1,
+        "read_file": 1,
+        "run_tests": 1,
+        "write_file": 2
+      },
+      "tests_run": 1,
+      "tests_passed": false,
+      "plan_stats": {
+        "subagents": 0,
+        "rollbacks": 0,
+        "accept_runs": 0,
+        "seconds": 0.0
+      },
+      "partial": 5,
+      "partial_total": 5,
+      "partial_failed": []
+    },
+    {
+      "name": "hard_two_bugs",
+      "passed": true,
+      "reason": "",
+      "seconds": 156.8,
+      "requests": 9,
+      "steps": 9,
+      "tokens_in": 46521,
+      "tokens_out": 1362,
+      "model_seconds": 156.04,
+      "tools": {
+        "edit_file": 2,
+        "read_file": 6,
+        "repo_map": 1,
+        "run_tests": 2
+      },
+      "tests_run": 2,
+      "tests_passed": true,
+      "plan_stats": {
+        "subagents": 0,
+        "rollbacks": 0,
+        "accept_runs": 0,
+        "seconds": 0.0
+      },
+      "partial": 3,
+      "partial_total": 3,
+      "partial_failed": []
+    }
+  ]
+}

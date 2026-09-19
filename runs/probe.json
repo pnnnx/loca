@@ -1,0 +1,35 @@
+{
+  "model": "qwen3.5:4b",
+  "ctx": null,
+  "when": "2026-09-18 22:09",
+  "results": [
+    {
+      "name": "hard_two_bugs",
+      "passed": true,
+      "reason": "",
+      "seconds": 120.5,
+      "requests": 9,
+      "steps": 9,
+      "tokens_in": 46677,
+      "tokens_out": 1375,
+      "model_seconds": 119.95,
+      "tools": {
+        "edit_file": 2,
+        "read_file": 6,
+        "repo_map": 1,
+        "run_tests": 2
+      },
+      "tests_run": 2,
+      "tests_passed": true,
+      "plan_stats": {
+        "subagents": 0,
+        "rollbacks": 0,
+        "accept_runs": 0,
+        "seconds": 0.0
+      },
+      "partial": 3,
+      "partial_total": 3,
+      "partial_failed": []
+    }
+  ]
+}
