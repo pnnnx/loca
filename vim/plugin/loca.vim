@@ -1,7 +1,7 @@
 " loca.vim — вызов агента loca из Vim / Neovim.
 "
 " Установка (Vim 8 / Neovim):
-"   set runtimepath+=~/Downloads/loca/vim
+"   set runtimepath+=~/Documents/loca/vim
 " или через менеджер плагинов, указав папку loca/vim.
 "
 " Команды:
