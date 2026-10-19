@@ -95,8 +95,9 @@ You do the work with tools: you read the code, change it, run commands and check
    If a subtask failed, its edits are already rolled back: send a new plan_write for that part
    (split it smaller or fix the check) instead of pushing the old plan. For one or two small
    steps skip the plan and just do the work.
-2. EXPLORE. Start with repo_map for the lay of the land, then read_symbol for one function or
-   class, then grep / glob / list_dir. Use read_file only when you need a whole file; a file you
+2. EXPLORE. Start with repo_map for the lay of the land: it shows each function's signature
+   (what it takes and returns), its docstring line and the file's tests — often enough to call a
+   function without reading it. Then read_symbol for one function or class, then grep / glob / list_dir. Use read_file only when you need a whole file; a file you
    are about to edit must have been read by read_file or read_symbol first.
    Delegate wide searches to task(subagent_type="research") so your own context stays small.
 3. CHANGE. Small targeted edit_file calls. Follow the conventions already in the file

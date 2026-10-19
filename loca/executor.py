@@ -175,7 +175,7 @@ def file_outlines(node: dict, ctx) -> str:
             parts.append(f"{rel}: файла ещё нет — его нужно создать")
             continue
         try:
-            parts.append(truncate(RepoMap().run({"path": rel}, ctx), 700))
+            parts.append(truncate(RepoMap().run({"path": rel}, ctx), 1200))
         except Exception:  # noqa: BLE001
             continue
     return "\n".join(parts)

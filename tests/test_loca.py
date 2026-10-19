@@ -633,13 +633,56 @@ def test_repo_map(tmp_path):
     (tmp_path / "notes.md").write_text("# not code\n")
     ctx = make_ctx(tmp_path)
     out = RepoMap().run({}, ctx)
-    assert "pkg/core.py" in out and "class Engine" in out and "start, stop" in out
-    assert "def helper" in out and "const LIMIT" in out
+    assert "pkg/core.py" in out and "class Engine" in out and ".start()" in out and ".stop()" in out
+    assert "def helper(x)" in out and "const LIMIT" in out
+    names = RepoMap().run({"detail": "names"}, ctx)
+    assert "start, stop" in names and "def helper\n" in names
     assert "web.ts" in out and "function render" in out and "class View" in out
     assert "notes.md" not in out
     one = RepoMap().run({"path": "pkg/core.py"}, ctx)
     assert "web.ts" not in one and "class Engine" in one
     assert "ещё" not in RepoMap().run({"pattern": "*.py"}, ctx)
+
+
+def test_repo_map_signatures_tests_and_cache(tmp_path):
+    from loca.tools import codemap
+    from loca.tools.codemap import RepoMap
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "tests").mkdir()
+    core = tmp_path / "pkg" / "core.py"
+    core.write_text(
+        'def total(items: list[dict], *, tax: float = 0.2) -> float:\n'
+        '    """Сумма заказа с налогом."""\n    return 0.0\n\n\n'
+        'class Cart(Base):\n    def add(self, sku: str, qty=1) -> None:\n        pass\n\n'
+        '    @classmethod\n    def empty(cls) -> "Cart":\n        pass\n')
+    (tmp_path / "tests" / "test_core.py").write_text("def test_total():\n    pass\n")
+    (tmp_path / "app.js").write_text("export function render(x) {\n  return x\n}\n")
+    ctx = make_ctx(tmp_path)
+    out = RepoMap().run({}, ctx)
+    # что принимает и что отдаёт — без self/cls; первая строка docstring; тесты файла
+    assert "def total(items: list[dict], *, tax: float=0.2) -> float  # Сумма заказа с налогом." in out
+    assert "class Cart(Base)" in out and ".add(sku: str, qty=1) -> None" in out
+    assert ".empty() -> 'Cart'" in out
+    assert "pkg/core.py (" in out and "тесты: tests/test_core.py" in out
+    assert "1: export function render(x)" in out
+    # кэш: неизменённый файл не перечитывается, изменённый — перечитывается
+    calls = []
+    real = codemap._read_text
+    codemap._read_text = lambda p: calls.append(p) or real(p)
+    try:
+        RepoMap().run({"path": "pkg/core.py"}, ctx)
+        assert calls == []
+        core.write_text("def total(items) -> int:\n    return 0\n")
+        again = RepoMap().run({"path": "pkg/core.py"}, ctx)
+        assert calls and "def total(items) -> int" in again
+    finally:
+        codemap._read_text = real
+    # большая карта — автоматически без сигнатур и с подсказкой
+    ctx.cfg["max_tool_output"] = 300
+    for i in range(12):
+        (tmp_path / f"m{i}.py").write_text(f"def f{i}(a: int, b: str = 'x') -> bool:\n    return True\n")
+    big = RepoMap().run({}, ctx)
+    assert "Сигнатуры скрыты" in big
 
 
 def test_read_symbol(tmp_path):

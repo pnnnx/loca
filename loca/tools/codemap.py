@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import re
 from pathlib import Path
 
@@ -33,26 +34,57 @@ _PATTERNS = [
 ]
 
 
+def _args_sig(node) -> str:
+    """Аргументы без self/cls, с аннотациями и значениями по умолчанию, плюс -> возврат."""
+    try:
+        args = copy.copy(node.args)
+        if args.posonlyargs and args.posonlyargs[0].arg in ("self", "cls"):
+            args.posonlyargs = args.posonlyargs[1:]
+        elif args.args and args.args[0].arg in ("self", "cls"):
+            args.args = args.args[1:]
+        sig = f"({ast.unparse(args)})"
+        if node.returns is not None:
+            sig += f" -> {ast.unparse(node.returns)}"
+    except Exception:  # noqa: BLE001 — сигнатура не критична
+        return "(…)"
+    return sig if len(sig) <= 110 else sig[:107] + "…"
+
+
+def _doc_line(node) -> str:
+    doc = ast.get_docstring(node) or ""
+    line = doc.strip().splitlines()[0].strip() if doc.strip() else ""
+    return line if len(line) <= 70 else line[:67] + "…"
+
+
 def _python_outline(text: str) -> list[dict]:
-    """[{line, kind, name, children:[имена]}] для верхнего уровня модуля."""
+    """[{line, kind, name, sig, doc, children:[{name, sig}]}] для верхнего уровня модуля.
+
+    Сигнатура — «что принимает и что отдаёт»: по ней модель часто понимает функцию,
+    не открывая её код (узкое место «длинный контекст»).
+    """
     try:
         tree = ast.parse(text)
     except SyntaxError:
         return []
+    defs = (ast.FunctionDef, ast.AsyncFunctionDef)
     out = []
     for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            out.append({"line": node.lineno, "kind": "def", "name": node.name, "children": []})
+        if isinstance(node, defs):
+            kind = "async def" if isinstance(node, ast.AsyncFunctionDef) else "def"
+            out.append({"line": node.lineno, "kind": kind, "name": node.name,
+                        "sig": _args_sig(node), "doc": _doc_line(node), "children": []})
         elif isinstance(node, ast.ClassDef):
-            methods = [n.name for n in node.body
-                       if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+            methods = [{"name": n.name, "sig": _args_sig(n)} for n in node.body if isinstance(n, defs)]
+            bases = ", ".join(ast.unparse(b) for b in node.bases) if node.bases else ""
             out.append({"line": node.lineno, "kind": "class", "name": node.name,
+                        "sig": f"({bases})" if bases else "", "doc": _doc_line(node),
                         "children": methods})
-        elif isinstance(node, ast.Assign):
-            for target in node.targets:
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
                 if isinstance(target, ast.Name) and target.id.isupper():
                     out.append({"line": node.lineno, "kind": "const", "name": target.id,
-                                "children": []})
+                                "sig": "", "doc": "", "children": []})
     return out
 
 
@@ -68,14 +100,19 @@ def _regex_outline(text: str) -> list[dict]:
                 if (name, kind) in seen:
                     break
                 seen.add((name, kind))
-                out.append({"line": i, "kind": kind, "name": name, "children": []})
+                sig = re.sub(r"\s*\{\s*\}?\s*$", "", line.strip())
+                sig = sig if len(sig) <= 110 else sig[:107] + "…"
+                out.append({"line": i, "kind": kind, "name": name, "sig": sig, "doc": "",
+                            "raw": True, "children": []})
                 break
     return out
 
 
-def outline(path: Path, text: str | None = None) -> list[dict]:
-    if text is None:
-        text = _read_text(path)
+_CACHE: dict[str, tuple[int, int, int, list[dict]]] = {}   # путь -> (mtime_ns, size, строк, символы)
+_CACHE_MAX = 4000
+
+
+def _parse(path: Path, text: str) -> list[dict]:
     if path.suffix in (".py", ".pyi"):
         result = _python_outline(text)
         if result:
@@ -83,33 +120,90 @@ def outline(path: Path, text: str | None = None) -> list[dict]:
     return _regex_outline(text)
 
 
-def render_outline(rel: str, lines_total: int, symbols: list[dict], max_symbols: int = 25) -> str:
-    head = f"{rel} ({lines_total} строк)"
+def outline(path: Path, text: str | None = None) -> list[dict]:
+    if text is not None:
+        return _parse(path, text)
+    return cached_outline(path)[1]
+
+
+def cached_outline(path: Path) -> tuple[int, list[dict]]:
+    """(строк, символы) файла; повторный вызов для неизменённого файла не читает его заново."""
+    st = path.stat()
+    key = str(path)
+    hit = _CACHE.get(key)
+    if hit and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
+        return hit[2], hit[3]
+    text = _read_text(path)
+    result = (len(text.splitlines()), _parse(path, text))
+    if len(_CACHE) >= _CACHE_MAX:
+        _CACHE.clear()
+    _CACHE[key] = (st.st_mtime_ns, st.st_size, *result)
+    return result
+
+
+def render_outline(rel: str, lines_total: int, symbols: list[dict], max_symbols: int = 25,
+                   detail: bool = True, tests: str = "") -> str:
+    """detail=True — с сигнатурами и первой строкой docstring; False — только имена."""
+    head = f"{rel} ({lines_total} строк)" + (f" · тесты: {tests}" if tests else "")
     if not symbols:
         return head + "\n  (символов не найдено)"
     body = []
     for sym in symbols[:max_symbols]:
-        line = f"  {sym['line']}: {sym['kind']} {sym['name']}"
-        if sym.get("children"):
-            kids = ", ".join(sym["children"][:12])
-            if len(sym["children"]) > 12:
-                kids += f", … +{len(sym['children']) - 12}"
-            line += f" — {kids}"
+        if detail and sym.get("raw") and sym.get("sig"):
+            line = f"  {sym['line']}: {sym['sig']}"     # не-Python: строка объявления целиком
+        else:
+            sig = sym.get("sig", "") if detail and sym["kind"] != "const" else ""
+            line = f"  {sym['line']}: {sym['kind']} {sym['name']}{sig}"
+        if detail and sym.get("doc"):
+            line += f"  # {sym['doc']}"
+        kids = [k if isinstance(k, dict) else {"name": k} for k in sym.get("children") or []]
+        if kids and not detail:
+            names = [k["name"] for k in kids]
+            line += " — " + ", ".join(names[:12]) + (f", … +{len(names) - 12}" if len(names) > 12 else "")
         body.append(line)
+        if kids and detail:
+            body += [f"      .{k['name']}{k.get('sig', '')}" for k in kids[:12]]
+            if len(kids) > 12:
+                body.append(f"      … ещё {len(kids) - 12} методов")
     if len(symbols) > max_symbols:
         body.append(f"  … ещё {len(symbols) - max_symbols} символов")
     return "\n".join([head] + body)
 
 
+_LANG_FAMILY = {".py": "py", ".pyi": "py", ".js": "js", ".jsx": "js", ".mjs": "js", ".cjs": "js",
+                ".ts": "js", ".tsx": "js"}
+
+
+def _same_lang(a: str, b: str) -> bool:
+    return _LANG_FAMILY.get(a, a) == _LANG_FAMILY.get(b, b)
+
+
+def _test_index(files: list[Path]) -> dict[str, list[Path]]:
+    """stem -> тестовые файлы (test_<stem>.py, <stem>_test.py, <stem>.test.js…)."""
+    index: dict[str, list[Path]] = {}
+    for f in files:
+        n = f.name
+        for stem in (n[5:].split(".")[0] if n.startswith("test_") else None,
+                     n.split("_test.")[0] if "_test." in n else None,
+                     n.split(".test.")[0] if ".test." in n else None,
+                     n.split(".spec.")[0] if ".spec." in n else None):
+            if stem:
+                index.setdefault(stem, []).append(f)
+    return index
+
+
 class RepoMap(Tool):
     name = "repo_map"
-    description = ("Карта кода: файлы и их символы (классы, функции, методы) с номерами строк. "
+    description = ("Карта кода: файлы и их символы (классы, функции, методы) с номерами строк, "
+                   "сигнатурами (что принимают и что возвращают) и тестами файла. "
                    "Начинайте с неё вместо чтения файлов целиком: так видно, где что лежит, "
                    "за один вызов. path на файл даёт outline одного файла.")
     parameters = obj({
         "path": {"type": "string", "description": "Файл или каталог (по умолчанию '.')"},
         "pattern": {"type": "string", "description": "Фильтр по имени, например '*.py'"},
         "max_files": {"type": "integer", "description": "Сколько файлов показать (по умолчанию 60)"},
+        "detail": {"type": "string", "enum": ["auto", "signatures", "names"],
+                   "description": "auto (по умолчанию): сигнатуры, если карта помещается"},
     }, [])
 
     def summary(self, args):
@@ -120,9 +214,11 @@ class RepoMap(Tool):
         if not base.exists():
             raise ToolError(f"Нет такого пути: {ctx.rel(base)}")
         pattern = (args.get("pattern") or "").strip()
+        detail = str(args.get("detail") or "auto").lower()
         max_files = max(1, min(int(args.get("max_files") or 60), 400))
+        project = [f for f in _walk(ctx.cwd) if f.suffix in CODE_SUFFIXES]
         files = [base] if base.is_file() else [
-            f for f in _walk(base)
+            f for f in (project if base == ctx.cwd.resolve() else _walk(base))
             if f.suffix in CODE_SUFFIXES and f.name not in IGNORED_DIRS]
         if pattern:
             import fnmatch
@@ -131,22 +227,36 @@ class RepoMap(Tool):
         if not files:
             raise ToolError("Файлов с кодом не нашлось. Попробуйте list_dir или другой pattern.")
         files = sorted(files, key=lambda f: str(f))
-        shown, blocks, total_syms = files[:max_files], [], 0
+        tests = _test_index(project)
+        shown, parsed, total_syms = files[:max_files], [], 0
         for f in shown:
             if _is_binary(f):
                 continue
             try:
-                text = _read_text(f)
+                n_lines, syms = cached_outline(f)
             except OSError:
                 continue
-            syms = outline(f, text)
             total_syms += len(syms)
-            blocks.append(render_outline(ctx.rel(f), len(text.splitlines()), syms))
+            stem = f.name.split(".")[0]
+            own = [] if stem.startswith("test_") else [
+                t for t in tests.get(stem, []) if _same_lang(t.suffix, f.suffix)]
+            parsed.append((ctx.rel(f), n_lines, syms, ", ".join(ctx.rel(t) for t in own[:2])))
         tail = ""
         if len(files) > len(shown):
             tail = f"\n… ещё {len(files) - len(shown)} файлов (уточните path или pattern)"
-        header = f"{len(shown)} файлов, {total_syms} символов. read_symbol покажет любой из них.\n"
-        return truncate(header + "\n".join(blocks) + tail, ctx.cfg["max_tool_output"])
+        limit = ctx.cfg["max_tool_output"]
+
+        def build(with_sig: bool) -> str:
+            return "\n".join(render_outline(r, n, sy, detail=with_sig, tests=t) for r, n, sy, t in parsed)
+
+        body, note = build(detail != "names"), ""
+        if detail == "auto" and len(body) > limit * 0.9:
+            body = build(False)
+            note = ("Сигнатуры скрыты — карта большая. repo_map с path на папку или файл "
+                    "покажет, что функции принимают и возвращают.\n")
+        header = (f"{len(shown)} файлов, {total_syms} символов. read_symbol покажет любой из них.\n"
+                  + note)
+        return truncate(header + body + tail, limit)
 
 
 def _python_symbol(text: str, name: str) -> tuple[int, int] | None:

@@ -69,7 +69,10 @@ def needs_spec(text: str, cfg: dict) -> bool:
 def project_map(ctx, limit: int = 2500) -> str:
     from .tools.codemap import RepoMap
     try:
-        return truncate(RepoMap().run({"max_files": 40}, ctx), limit)
+        text = RepoMap().run({"max_files": 40}, ctx)
+        if len(text) > limit:      # для задания важнее полный список файлов, чем сигнатуры
+            text = RepoMap().run({"max_files": 40, "detail": "names"}, ctx)
+        return truncate(text, limit)
     except Exception:  # noqa: BLE001 — пустой проект или нет кода: задание всё равно нужно
         return "(файлов с кодом нет)"
 
