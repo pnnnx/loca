@@ -170,7 +170,7 @@ def probe_spec(args) -> list[dict]:
         cfg = load_config(root, overrides(args))
         llm = make_client(cfg)
         ctx = ToolContext(cwd=root, cfg=cfg, ui=UI(quiet=True), permissions=Permissions(cfg, interactive=False))
-        for case in SPEC_CASES:
+        for case in [c for c in SPEC_CASES if not args.case or c["id"] == args.case]:
             started = time.time()
             try:
                 text = make_spec(llm, ctx, case["request"])
@@ -208,7 +208,7 @@ def score_verify(case: dict, stats: dict, answer: str) -> dict:
 
 def probe_verify(args) -> list[dict]:
     results = []
-    for case in VERIFY_CASES:
+    for case in [c for c in VERIFY_CASES if not args.case or c["id"] == args.case]:
         work = Path(tempfile.mkdtemp(prefix=f"loca-probe-{case['id']}-"))
         home = Path(tempfile.mkdtemp(prefix="loca-probe-home-"))
         try:
@@ -255,6 +255,7 @@ def overrides(args) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--only", choices=["spec", "verify"])
+    ap.add_argument("--case", help="только этот случай (id), например file")
     ap.add_argument("--backend", choices=["ollama", "llamacpp"])
     ap.add_argument("--host")
     ap.add_argument("-m", "--model")

@@ -77,6 +77,87 @@ def needs_verification(text: str) -> bool:
     return bool(_VERIFY_RE.search(text or ""))
 
 
+# ---- автозапуск: маленькая модель напоминание «сначала запусти» игнорирует (пробник на
+# Qwen2.5-Coder-7B: ответила «файла не существует», не вызвав ни одного инструмента), поэтому
+# код запускает сам агент — до первого ответа модели, обычным вызовом bash с проверкой прав.
+_FENCE_RE = re.compile(r"```([\w+-]*)[ \t]*\n(.*?)```", re.S)
+_FILE_RE = re.compile(r"(?<![\w/.-])((?:[\w.-]+/)*[\w-]+\.(?:py|js|mjs|sql))\b")
+# что не запускаем сами: удаляет/пишет файлы, сеть, процессы, ждёт ввода
+_UNSAFE_RE = re.compile(
+    r"\b(?:os\.(?:remove|unlink|rmdir|removedirs|system|popen|kill)|shutil\.(?:rmtree|move)|"
+    r"subprocess|socket|requests|urllib|http\.client|input\s*\(|sys\.stdin|"
+    r"open\s*\([^)]*['\"][wax+]|\.(?:unlink|rmdir|write_text|write_bytes)\s*\(|"
+    r"child_process|fs\.(?:unlink|rm|write)|process\.stdin|readline|"
+    r"\b(?:DROP|DELETE|ATTACH)\b|while\s+True|setInterval)", re.I)
+_LANG = {"python": "py", "py": "py", "python3": "py", "": "py",
+         "javascript": "js", "js": "js", "node": "js", "sql": "sql", "sqlite": "sql"}
+_SQL_RUNNER = (
+    "import sqlite3, sys\n"
+    "con = sqlite3.connect(':memory:')\n"
+    "for st in [s.strip() for s in open(sys.argv[1], encoding='utf-8').read().split(';') if s.strip()]:\n"
+    "    cur = con.execute(st)\n"
+    "    if cur.description:\n"
+    "        print(' | '.join(d[0] for d in cur.description))\n"
+    "        rows = cur.fetchall()\n"
+    "        for r in rows: print(' | '.join('NULL' if v is None else str(v) for v in r))\n"
+    "        print(f'({len(rows)} rows)')\n")
+
+
+def verify_commands(text: str, cwd) -> tuple[list[str], list[str]]:
+    """Что запустить до ответа: (команды, причины пропуска, файлы проекта, которые надо показать
+    модели вместе с выводом — без исходника она объясняет вывод выдуманным кодом)."""
+    from pathlib import Path
+    cmds, skipped, sources = [], [], []
+    scratch = Path(cwd) / ".loca" / "scratch"
+
+    def safe(code: str, label: str) -> bool:
+        m = _UNSAFE_RE.search(code)
+        if m:
+            skipped.append(f"{label}: не запускаю сам — в коде `{m.group(0).strip()}`")
+        return not m
+
+    for i, m in enumerate(_FENCE_RE.finditer(text or "")):
+        lang = _LANG.get(m.group(1).lower())
+        code = m.group(2)
+        if lang is None or not code.strip() or not safe(code, f"код из вопроса #{i + 1}"):
+            continue
+        scratch.mkdir(parents=True, exist_ok=True)
+        f = scratch / f"snippet_{i + 1}.{lang}"
+        f.write_text(code, encoding="utf-8")
+        rel = f.relative_to(cwd)
+        if lang == "py":
+            cmds.append(f"python3 {rel}")
+        elif lang == "js":
+            cmds.append(f"node {rel}")
+        else:
+            runner = scratch / "run_sql.py"
+            runner.write_text(_SQL_RUNNER, encoding="utf-8")
+            cmds.append(f"python3 {runner.relative_to(cwd)} {rel}")
+    outside = _FENCE_RE.sub(" ", text or "")
+    for m in _FILE_RE.finditer(outside):
+        path = Path(cwd) / m.group(1)
+        if not path.is_file() or path.suffix == ".sql":
+            continue
+        try:
+            code = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if not safe(code, m.group(1)):
+            continue
+        cmd = ("node " if path.suffix in (".js", ".mjs") else "python3 ") + m.group(1)
+        if cmd not in cmds:
+            cmds.append(cmd)
+            sources.append(m.group(1))
+    return cmds[:2], skipped, sources[:2]
+
+
+AUTORUN_TEXT = (
+    "[loca] Before you answer, the code from the question was RUN (see the bash result above; "
+    "the source is above too). Base the answer on that REAL output: quote it exactly, then explain "
+    "line by line which code in the source produces it and why (the language mechanism). "
+    "Never state a different output and never invent code that is not in the source.")
+
+
 def looks_multifile(text: str) -> bool:
     """Запрос, который почти наверняка не влезает в один файл и один шаг."""
     low = (text or "").lower()
@@ -296,7 +377,8 @@ class Agent:
         # «что выведет / почему падает»: сначала запуск, потом объяснение
         if (not self.sub and self.ctx.cfg.get("verify_first", True) and "bash" in self.tools
                 and needs_verification(user_text)):
-            self.messages.append({"role": "user", "content": VERIFY_TEXT})
+            if not self._autorun(user_text):
+                self.messages.append({"role": "user", "content": VERIFY_TEXT})
         for step in range(1, self.max_steps + 1):
             if self.ctx.deadline and time.time() > self.ctx.deadline:
                 self.ctx.budget_hit = True
@@ -394,6 +476,36 @@ class Agent:
             self._maybe_remind(step)
         self.ui.warn(f"Достигнут лимит шагов ({self.max_steps}). Напишите «продолжай», чтобы продолжить.")
         return final
+
+    def _autorun(self, user_text: str) -> bool:
+        """Запускает код из вопроса сам. True — реальный вывод уже в истории."""
+        try:
+            cmds, skipped, sources = verify_commands(user_text, self.ctx.cwd)
+        except OSError:
+            return False
+        for why in skipped:
+            self.ui.info(why)
+        if not cmds:
+            return False
+        for rel in sources:              # сначала исходник: объяснять надо его, а не догадку о нём
+            if "read_file" not in self.tools:
+                break
+            call = ToolCall("read_file", {"path": rel})
+            result = self.execute(call)
+            self.messages.append({"role": "assistant", "content": "",
+                                  "tool_calls": [{"function": {"name": "read_file", "arguments": call.arguments}}]})
+            self.messages.append({"role": "tool", "tool_name": "read_file", "content": result})
+        ran = False
+        for cmd in cmds:
+            call = ToolCall("bash", {"command": cmd, "timeout": 30})
+            result = self.execute(call)
+            self.messages.append({"role": "assistant", "content": "",
+                                  "tool_calls": [{"function": {"name": "bash", "arguments": call.arguments}}]})
+            self.messages.append({"role": "tool", "tool_name": "bash", "content": result})
+            ran = ran or not result.startswith(("Denied", "Error:"))
+        if ran:
+            self.messages.append({"role": "user", "content": AUTORUN_TEXT})
+        return ran
 
     def _maybe_remind(self, step: int) -> None:
         """Periodically re-state the plan, the way Claude Code re-injects its plan."""

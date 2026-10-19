@@ -1781,6 +1781,29 @@ def test_confirm_loop_accept_correct_cancel(tmp_path):
     assert confirm_loop(llm, ctx, "удали лишнее", ask=lambda h: "n", show=shown.append) is None
 
 
+def test_check_spec_fixes_paths_and_asks_on_vague_request(tmp_path):
+    from loca.spec import check_spec, is_vague
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "shop" / "cart.py").write_text("class Cart: pass\n")
+    ctx = make_ctx(tmp_path)
+    # так ответила настоящая Qwen2.5-Coder-7B на «Добавь промокоды.»: цель додумана, вопросов нет,
+    # существующий файл помечен «(новый)», один путь выдуман
+    spec = ("Цель: Добавить промокоды в систему корзины.\n"
+            "Файлы: shop/cart.py (новый) · /app/shop/promo.py\n"
+            "Ограничения: Нет\nГотово, когда: тесты проходят\nПредположения: Нет\nВопросы: нет")
+    out = check_spec(spec, "Добавь промокоды.", ctx)
+    assert "shop/cart.py (новый)" not in out and "shop/cart.py" in out
+    assert "promo.py (нет в проекте)" in out
+    assert "Вопросы: 1) Просьба без подробностей" in out
+    # ясная просьба: ничего не добавляем
+    clear = ("Цель: discount\nФайлы: shop/cart.py\nОграничения: нет\nГотово, когда: `pytest -q`\n"
+             "Предположения: нет\nВопросы: нет")
+    assert check_spec(clear, "Добавь в shop/cart.py метод discount(percent)", ctx) == clear
+    assert is_vague("Сделай, чтобы корзина работала лучше.")
+    assert not is_vague("Поправь /app/shop/report.py: итог с двумя знаками")
+    assert not is_vague("сделай calc_total быстрее")
+
+
 def test_headless_skips_spec_and_verify_nudge_reaches_model(tmp_path, capsys):
     (tmp_path / "app.py").write_text("print(sum([0.1] * 3))\n")
     fake = FakeOllama([{"content": "Выведет 0.30000000000000004."},
@@ -1793,8 +1816,47 @@ def test_headless_skips_spec_and_verify_nudge_reaches_model(tmp_path, capsys):
     fake.close()
     first, second = fake.requests[0], fake.requests[1]
     assert first["tools"] and second["tools"]          # в -p задание не запрашивалось
-    assert any("RUN it" in m["content"] for m in first["messages"] if m["role"] == "user")
-    assert not any("RUN it" in m["content"] for m in second["messages"] if m["role"] == "user")
+    # «что выведет app.py?»: агент сам запустил файл ДО первого ответа модели
+    tool_msgs = [m["content"] for m in first["messages"] if m["role"] == "tool"]
+    assert any("print(sum([0.1] * 3))" in c for c in tool_msgs)        # исходник показан
+    assert any("0.30000000000000004" in c for c in tool_msgs)          # и настоящий вывод
+    assert any("was RUN" in m["content"] for m in first["messages"] if m["role"] == "user")
+    assert not any("RUN" in m["content"] for m in second["messages"] if m["role"] == "user")
+
+
+def test_verify_commands_files_snippets_and_unsafe(tmp_path):
+    from loca.agent import verify_commands
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "tricky.py").write_text("print(round(2.675, 2))\n")
+    (tmp_path / "wipe.py").write_text("import shutil\nshutil.rmtree('/tmp/x')\n")
+    cmds, skipped, sources = verify_commands("Что выведет python3 pkg/tricky.py?", tmp_path)
+    assert cmds == ["python3 pkg/tricky.py"] and not skipped and sources == ["pkg/tricky.py"]
+    cmds, skipped, _ = verify_commands("что выведет wipe.py и missing.py?", tmp_path)
+    assert cmds == [] and "shutil.rmtree" in skipped[0]
+    q = "Что выведет код?\n```python\nx = [1]\nprint(x * 2)\n```\nа этот?\n```js\nconsole.log(1)\n```"
+    cmds, _, sources = verify_commands(q, tmp_path)
+    assert sources == []                     # код из вопроса модель и так видит
+    assert cmds == ["python3 .loca/scratch/snippet_1.py", "node .loca/scratch/snippet_2.js"]
+    assert (tmp_path / ".loca/scratch/snippet_1.py").read_text() == "x = [1]\nprint(x * 2)\n"
+    cmds, skipped, _ = verify_commands("что выведет?\n```python\nname = input()\n```", tmp_path)
+    assert cmds == [] and "input" in skipped[0]
+    sql = "почему пусто?\n```sql\nCREATE TABLE t(a);\nINSERT INTO t VALUES (1);\nSELECT a FROM t;\n```"
+    cmds, _, _ = verify_commands(sql, tmp_path)
+    assert cmds[0].startswith("python3 .loca/scratch/run_sql.py")
+    import subprocess
+    out = subprocess.run(cmds[0].split(), cwd=tmp_path, capture_output=True, text=True).stdout
+    assert out.splitlines() == ["a", "1", "(1 rows)"]
+
+
+def test_autorun_falls_back_to_reminder_when_nothing_to_run(tmp_path, capsys):
+    fake = FakeOllama([{"content": "Ответ."}])
+    from loca.cli import main
+    main(["-p", "--yolo", "--host", fake.url, "-m", "fake:1b", "--cwd", str(tmp_path),
+          "почему падает мой скрипт, который я не показал?"])
+    fake.close()
+    msgs = fake.requests[0]["messages"]
+    assert not any(m["role"] == "tool" for m in msgs)
+    assert any("RUN it" in m["content"] for m in msgs if m["role"] == "user")
 
 
 def test_interactive_ask_confirms_spec_first(tmp_path, monkeypatch, capsys):

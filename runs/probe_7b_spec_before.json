@@ -1,0 +1,64 @@
+{
+ "started": "2026-10-20 00:27",
+ "args": {
+  "only": "spec",
+  "backend": "llamacpp",
+  "host": "http://127.0.0.1:8090",
+  "model": null,
+  "ctx": null,
+  "timeout": 1800,
+  "no_verify_first": false,
+  "out": "/home/claude/probe_spec_base7b.json",
+  "verbose": true
+ },
+ "spec": [
+  {
+   "id": "clear",
+   "format": true,
+   "missing": [],
+   "invented_paths": [],
+   "runnable_done": true,
+   "asks": true,
+   "files": "- `shop/cart.py` (новый метод `discount(percent)`)\n- `tests/test_cart.py` (новый тест `test_discount`)",
+   "ok": true,
+   "seconds": 125.4,
+   "text": "Цель: Добавить метод `discount(percent)` в класс `Cart` в файле `shop/cart.py`, который уменьшает итоговую сумму на заданный процент, и написать тест на этот метод в файле `tests/test_cart.py`.\n\nФайлы: \n- `shop/cart.py` (новый метод `discount(percent)`)\n- `tests/test_cart.py` (новый тест `test_discount`)\n\nОграничения: \n- Не менять существующие методы и атрибуты класса `Cart`.\n- Не менять существующие тесты.\n\nГотово, когда: \n- Команда `python -m unittest tests.test_cart` завершается без ошибок.\n\nПредположения: \n- Метод `discount(percent)` должен уменьшать итоговую сумму на заданный процент.\n- Тест должен проверить корректность работы метода `discount(percent)`.\n\nВопросы: \n- нет"
+  },
+  {
+   "id": "vague_speed",
+   "format": true,
+   "missing": [],
+   "invented_paths": [],
+   "runnable_done": true,
+   "asks": false,
+   "files": "shop/cart.py",
+   "ok": false,
+   "seconds": 27.4,
+   "text": "Цель: Улучшить функциональность корзины.\nФайлы: shop/cart.py\nОграничения: Нет\nГотово, когда: tests/test_cart.py:CartTest.test_total() проходит успешно\nПредположения: Нет\nВопросы: нет"
+  },
+  {
+   "id": "vague_promo",
+   "format": true,
+   "missing": [],
+   "invented_paths": [],
+   "runnable_done": false,
+   "asks": false,
+   "files": "shop/cart.py (новый) · tests/test_cart.py (новый)",
+   "ok": false,
+   "seconds": 32.0,
+   "text": "Цель: Добавить промокоды в систему корзины.\nФайлы: shop/cart.py (новый) · tests/test_cart.py (новый)\nОграничения: Нет\nГотово, когда: tests/test_cart.py:CartTest.test_promocode()\nПредположения: Нет\nВопросы: нет"
+  },
+  {
+   "id": "wrong_path",
+   "format": true,
+   "missing": [],
+   "invented_paths": [],
+   "runnable_done": true,
+   "asks": false,
+   "files": "shop/report.py",
+   "ok": true,
+   "seconds": 37.7,
+   "text": "Цель: В чеке итог должен быть с двумя знаками после запятой.\nФайлы: shop/report.py\nОграничения: Нет\nГотово, когда: Функция `receipt` возвращает строку с итогом, отформатированной с двумя знаками после запятой.\nПредположения: Нет\nВопросы: нет"
+  }
+ ]
+}

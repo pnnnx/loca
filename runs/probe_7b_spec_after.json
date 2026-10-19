@@ -1,0 +1,64 @@
+{
+ "started": "2026-10-20 00:31",
+ "args": {
+  "only": "spec",
+  "backend": "llamacpp",
+  "host": "http://127.0.0.1:8090",
+  "model": null,
+  "ctx": null,
+  "timeout": 1800,
+  "no_verify_first": false,
+  "out": "/home/claude/probe_spec2.json",
+  "verbose": true
+ },
+ "spec": [
+  {
+   "id": "clear",
+   "format": true,
+   "missing": [],
+   "invented_paths": [],
+   "runnable_done": true,
+   "asks": false,
+   "files": "shop/cart.py, tests/test_cart.py",
+   "ok": true,
+   "seconds": 92.0,
+   "text": "Цель: добавить метод discount(percent) в shop/cart.py, который уменьшает итог на процент, и тест на него в tests/test_cart.py\n\nФайлы: shop/cart.py, tests/test_cart.py\n\nОграничения: нет\n\nГотово, когда: `python -m pytest -q` проходит и метод discount работает корректно\n\nПредположения: нет\n\nВопросы: нет"
+  },
+  {
+   "id": "vague_speed",
+   "format": true,
+   "missing": [],
+   "invented_paths": [],
+   "runnable_done": true,
+   "asks": true,
+   "files": "shop/cart.py, tests/test_cart.py",
+   "ok": true,
+   "seconds": 32.2,
+   "text": "Цель: улучшить работу корзины\nФайлы: shop/cart.py, tests/test_cart.py\nОграничения: нет\nГотово, когда: `python -m pytest -q` проходит и корзина работает более эффективно и надежно\nПредположения: нет\nВопросы: 1) Просьба без подробностей — что именно должно измениться и как это проверить (пример входа и ожидаемого результата)?"
+  },
+  {
+   "id": "vague_promo",
+   "format": true,
+   "missing": [],
+   "invented_paths": [],
+   "runnable_done": false,
+   "asks": true,
+   "files": "нет",
+   "ok": false,
+   "seconds": 35.4,
+   "text": "Цель: добавить промокоды в проект\nФайлы: нет\nОграничения: нет\nГотово, когда: нет\nПредположения: нет\nВопросы: 1) Какие промокоды нужно добавить? 2) Где их нужно хранить? 3) Как они должны влиять на стоимость корзины?"
+  },
+  {
+   "id": "wrong_path",
+   "format": true,
+   "missing": [],
+   "invented_paths": [],
+   "runnable_done": true,
+   "asks": false,
+   "files": "shop/report.py",
+   "ok": true,
+   "seconds": 39.1,
+   "text": "Цель: в чеке итог должен быть с двумя знаками после запятой\nФайлы: shop/report.py\nОграничения: нет\nГотово, когда: `python -m pytest -q` проходит и итог в чеке отображается с двумя знаками после запятой\nПредположения: нет\nВопросы: нет"
+  }
+ ]
+}

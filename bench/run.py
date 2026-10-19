@@ -120,14 +120,15 @@ def run_task(task: dict, args) -> dict:
         stats_path = workspace / ".loca_stats.json"
         env = {**os.environ, "PYTHONPATH": str(REPO) + os.pathsep + os.environ.get("PYTHONPATH", ""),
                "LOCA_HOME": str(loca_home)}
-        hard = int(task.get("timeout", args.timeout))
+        scale = float(getattr(args, "time_scale", 1.0) or 1.0)
+        hard = int(task.get("timeout", args.timeout) * scale)
         margin = int(getattr(args, "margin", 45) or 0)
         soft = max(60, hard - margin) if margin > 0 else 0
         started = time.time()
         try:
             proc = subprocess.run(agent_command(args, workspace, stats_path, task["prompt"], soft),
                                   cwd=workspace, env=env, capture_output=True, text=True,
-                                  timeout=task.get("timeout", args.timeout))
+                                  timeout=hard)
             stdout, timed_out = proc.stdout + proc.stderr, False
         except subprocess.TimeoutExpired as e:
             stdout = (e.stdout or "") + (e.stderr or "") if isinstance(e.stdout, str) else ""
@@ -323,6 +324,8 @@ def main(argv=None) -> int:
     p.add_argument("--think", action="store_true")
     p.add_argument("--loca", help="команда запуска (по умолчанию python3 -m loca из репозитория)")
     p.add_argument("--timeout", type=int, default=420, help="жёсткий таймаут на задачу")
+    p.add_argument("--time-scale", type=float, default=1.0, dest="time_scale",
+                   help="умножить таймауты задач (медленное железо: CPU — 10–15)")
     p.add_argument("--margin", type=int, default=45,
                    help="за сколько секунд до таймаута агент останавливается сам (0 — не мешать)")
     p.add_argument("--out", help="куда записать JSON с результатами")
