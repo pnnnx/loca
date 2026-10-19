@@ -5,6 +5,16 @@
 
 ---
 
+## 2026-10-19 — клиент llama.cpp
+**Что:** `LlamaCppClient` — llama-server через OpenAI-совместимый `/v1/chat/completions` (SSE),
+`make_client(cfg)` выбирает Ollama или llama.cpp; `bin/llama.sh` — запуск сервера под 8 ГБ.
+**Как:** `to_openai_messages` переводит историю из формата Ollama (id вызовов, arguments строкой,
+`tool_call_id`); размышления — `reasoning_content`; контекст и модель — из `/props`; `cache_prompt`.
+Сервер: `--jinja -np 1 -fa on -ctk/-ctv q8_0`. Подключение в cli — в следующем коммите.
+**Зачем:** llama.cpp быстрее и экономнее Ollama; Ollama остаётся (DECISIONS #6 в coder).
+**Проверка:** поддельный сервер `tests/fake_llamacpp.py` в тестах; живой прогон с llama-server и Qwen 0.5B.
+**Коммит:** `llm: клиент llama.cpp и bin/llama.sh`
+
 ## 2026-10-19 — пути и имена в стиле import
 **Что:** `/app/config.py` → `app/config.py`; `read_symbol("app.cli")` показывает карту модуля,
 `read_symbol("pkg.core.f")` — функцию `f` из `pkg/core.py`.

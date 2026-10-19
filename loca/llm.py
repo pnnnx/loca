@@ -1,4 +1,6 @@
-"""Ollama /api/chat client with streaming and a fallback tool-call parser.
+"""Клиенты моделей: Ollama (/api/chat) и llama.cpp (llama-server, OpenAI API) + разбор вызовов из текста.
+
+Ollama /api/chat client with streaming and a fallback tool-call parser.
 
 We use the native Ollama API (not the OpenAI-compatible one) because only it
 lets us set num_ctx / keep_alive / think per request.
@@ -81,6 +83,8 @@ def parse_text_tool_calls(text: str, known: Iterable[str]) -> tuple[list[ToolCal
 
 
 class OllamaClient:
+    backend = "ollama"
+
     def __init__(self, cfg: dict):
         self.host = cfg["host"].rstrip("/")
         if not self.host.startswith("http"):
@@ -172,3 +176,204 @@ class OllamaClient:
             if calls:
                 resp.tool_calls, resp.content, resp.parsed_from_text = calls, cleaned, True
         return resp
+
+
+# ---------------------------------------------------------------- llama.cpp
+def to_openai_messages(messages: list[dict]) -> list[dict]:
+    """Ollama-формат истории → OpenAI-формат, который понимает llama-server.
+
+    Отличия: у вызова инструмента нужен id, arguments — JSON-строка, а ответ
+    инструмента ссылается на вызов через tool_call_id (у Ollama — tool_name по порядку).
+    """
+    out: list[dict] = []
+    pending: list[str] = []        # id вызовов последнего ответа модели, ещё без результата
+    counter = 0
+    for m in messages:
+        role = m.get("role")
+        if role == "assistant" and m.get("tool_calls"):
+            calls = []
+            pending = []
+            for tc in m["tool_calls"]:
+                fn = tc.get("function") or {}
+                counter += 1
+                call_id = tc.get("id") or f"call_{counter}"
+                args = fn.get("arguments", {})
+                calls.append({"id": call_id, "type": "function",
+                              "function": {"name": fn.get("name", ""),
+                                           "arguments": args if isinstance(args, str)
+                                           else json.dumps(args, ensure_ascii=False)}})
+                pending.append(call_id)
+            out.append({"role": "assistant", "content": m.get("content") or "", "tool_calls": calls})
+        elif role == "tool":
+            call_id = pending.pop(0) if pending else f"call_orphan_{counter}"
+            out.append({"role": "tool", "tool_call_id": call_id, "content": m.get("content", "")})
+        else:
+            out.append({"role": role, "content": m.get("content", "")})
+    return out
+
+
+class LlamaCppClient:
+    """Клиент llama-server (llama.cpp) через его OpenAI-совместимый API.
+
+    Отличия от Ollama, которые важны агенту:
+    * контекст задаётся при запуске сервера (`-c`), а не в запросе — при первом
+      обращении читаем его из /props и подставляем в num_ctx, чтобы сжатие
+      срабатывало по реальному размеру;
+    * модель одна — та, с которой запущен сервер; `-m` в loca здесь только подпись;
+    * вызовы инструментов работают при запуске сервера с `--jinja`;
+    * префикс промпта сервер кэширует сам (cache_prompt), поэтому длинная история
+      агента не пересчитывается целиком на каждом шаге.
+    """
+
+    backend = "llamacpp"
+
+    def __init__(self, cfg: dict):
+        host = cfg.get("host") or ""
+        if not host or "11434" in host:          # адрес Ollama по умолчанию — не наш
+            host = cfg.get("llamacpp_host", "http://127.0.0.1:8080")
+        self.host = host.rstrip("/")
+        if not self.host.startswith("http"):
+            self.host = "http://" + self.host
+        self.model = cfg.get("model") or "local"
+        self.num_ctx = int(cfg["num_ctx"])
+        self.temperature = float(cfg["temperature"])
+        self.think = cfg.get("think")
+        self.timeout = int(cfg.get("request_timeout", 600))
+        self.max_tokens = int(cfg.get("max_output_tokens", 4096))
+        self._cfg = cfg
+        self._synced = False
+
+    # ------------------------------------------------------------------
+    def _open(self, req, timeout=None):
+        try:
+            return urllib.request.urlopen(req, timeout=timeout or self.timeout)
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode(errors="replace")
+            if "tools" in detail and ("jinja" in detail or "not supported" in detail):
+                raise LLMError("llama-server не принимает tools: перезапустите его с флагом --jinja") from e
+            if "exceed" in detail and "context" in detail:
+                raise LLMError(f"Запрос не влез в контекст сервера ({self.num_ctx}): "
+                               "/compact или перезапустите llama-server с большим -c") from e
+            raise LLMError(f"llama-server HTTP {e.code}: {detail[:500]}") from e
+        except (urllib.error.URLError, ConnectionError, socket.timeout) as e:
+            raise LLMError(
+                f"Не удалось подключиться к llama-server на {self.host} ({e}). Запустите его, например:\n"
+                "  llama-server -m модель.gguf --jinja -c 16384 -fa on -ctk q8_0 -ctv q8_0 --port 8080\n"
+                "(или bin/llama.sh)") from e
+
+    def _get(self, path: str, timeout: int = 5):
+        with self._open(urllib.request.Request(self.host + path), timeout) as r:
+            return json.load(r)
+
+    def sync(self) -> None:
+        """Подтягивает реальный размер контекста и имя модели с сервера (один раз)."""
+        if self._synced:
+            return
+        self._synced = True
+        try:
+            props = self._get("/props")
+        except LLMError:
+            return
+        settings = props.get("default_generation_settings") or {}
+        n_ctx = settings.get("n_ctx") or props.get("n_ctx")
+        if isinstance(n_ctx, int) and n_ctx > 0:
+            self.num_ctx = n_ctx
+            self._cfg["num_ctx"] = n_ctx
+        path = props.get("model_path") or settings.get("model") or ""
+        if path and self.model in ("local", "", None):
+            self.model = path.rsplit("/", 1)[-1]
+
+    def list_models(self) -> list[str]:
+        try:
+            data = self._get("/v1/models")
+        except LLMError as e:
+            raise LLMError(f"llama-server недоступен на {self.host}: {e}") from e
+        return [m.get("id", "") for m in data.get("data", [])]
+
+    def chat(self, messages: list[dict], tools: list[dict] | None = None,
+             on_token: Callable[[str], None] | None = None,
+             on_think: Callable[[str], None] | None = None,
+             think: bool | None = None) -> LLMResponse:
+        self.sync()
+        body: dict = {
+            "model": self.model,
+            "messages": to_openai_messages(messages),
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "temperature": self.temperature,
+            "cache_prompt": True,
+            # без лимита сервер генерирует до конца контекста: маленькая модель
+            # может зациклиться на повторе и съесть весь ход
+            "max_tokens": self.max_tokens,
+        }
+        if tools:
+            body["tools"] = tools
+        use_think = self.think if think is None else think
+        if use_think is not None:      # qwen3/3.5: гибридный режим размышлений через шаблон
+            body["chat_template_kwargs"] = {"enable_thinking": bool(use_think)}
+
+        req = urllib.request.Request(self.host + "/v1/chat/completions",
+                                     data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"})
+        resp = LLMResponse()
+        content, thinking = [], []
+        calls: dict[int, dict] = {}
+        started = __import__("time").time()
+        with self._open(req) as r:
+            for raw in r:
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                chunk = json.loads(data)
+                if chunk.get("error"):
+                    err = chunk["error"]
+                    raise LLMError(err.get("message") if isinstance(err, dict) else str(err))
+                for choice in chunk.get("choices") or []:
+                    delta = choice.get("delta") or {}
+                    if delta.get("reasoning_content"):
+                        thinking.append(delta["reasoning_content"])
+                        if on_think:
+                            on_think(delta["reasoning_content"])
+                    if delta.get("content"):
+                        content.append(delta["content"])
+                        if on_token:
+                            on_token(delta["content"])
+                    for tc in delta.get("tool_calls") or []:
+                        slot = calls.setdefault(tc.get("index", len(calls)), {"name": "", "args": ""})
+                        fn = tc.get("function") or {}
+                        if fn.get("name"):
+                            slot["name"] += fn["name"]
+                        if fn.get("arguments"):
+                            slot["args"] += fn["arguments"] if isinstance(fn["arguments"], str) \
+                                else json.dumps(fn["arguments"])
+                usage = chunk.get("usage")
+                if usage:
+                    resp.prompt_tokens = usage.get("prompt_tokens", 0) or 0
+                    resp.output_tokens = usage.get("completion_tokens", 0) or 0
+                timings = chunk.get("timings")
+                if timings and not resp.prompt_tokens:
+                    resp.prompt_tokens = (timings.get("prompt_n", 0) or 0) + (timings.get("cache_n", 0) or 0)
+                    resp.output_tokens = timings.get("predicted_n", 0) or 0
+        resp.seconds = __import__("time").time() - started
+        for _i, slot in sorted(calls.items()):
+            if slot["name"]:
+                resp.tool_calls.append(ToolCall(slot["name"], _coerce_args(slot["args"] or "{}")))
+        resp.content = "".join(content)
+        resp.thinking = "".join(thinking)
+        resp.content = re.sub(r"<think>.*?</think>\s*", "", resp.content, flags=re.S)
+        if not resp.tool_calls and tools:
+            names = [t["function"]["name"] for t in tools]
+            found, cleaned = parse_text_tool_calls(resp.content, names)
+            if found:
+                resp.tool_calls, resp.content, resp.parsed_from_text = found, cleaned, True
+        return resp
+
+
+def make_client(cfg: dict):
+    backend = str(cfg.get("backend", "ollama")).lower().replace(".", "").replace("-", "")
+    if backend in ("llamacpp", "llama", "llamaserver"):
+        return LlamaCppClient(cfg)
+    return OllamaClient(cfg)
