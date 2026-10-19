@@ -82,6 +82,9 @@ def check_acceptance(node: dict, ctx, strict: bool = True) -> tuple[bool, bool, 
     kind = accept.get("kind", "tests")
     timeout = int(ctx.cfg.get("accept_timeout", 180))
 
+    if kind == "smoke":
+        return _smoke_check(node, ctx)
+
     if kind == "symbol":
         args = {"name": accept["name"]}
         if accept.get("path"):
@@ -118,6 +121,44 @@ def check_acceptance(node: dict, ctx, strict: bool = True) -> tuple[bool, bool, 
         return True, False, _tail(output, 200)
     broken = strict and looks_broken(output, code)
     return False, broken, f"$ {command}\n{_tail(output)}\n[exit code {code}]"
+
+
+def _smoke_check(node: dict, ctx) -> tuple[bool, bool, str]:
+    """Промежуточная подзадача без своего теста: её файлы на месте и компилируются.
+    Что файлы вообще изменились, проверяет исполнитель (он знает состояние «до»)."""
+    files = node.get("files") or []
+    if not files:
+        return False, True, "у подзадачи нет files — нечего проверять (виноват план)"
+    problems = []
+    for rel in files:
+        try:
+            path = ctx.resolve(rel)
+        except Exception as e:  # noqa: BLE001
+            problems.append(f"{rel}: {e}")
+            continue
+        if not path.is_file():
+            problems.append(f"{rel}: файла нет")
+            continue
+        if path.suffix == ".py":
+            try:
+                compile(path.read_text(encoding="utf-8", errors="replace"), str(path), "exec")
+            except SyntaxError as e:
+                problems.append(f"{rel}:{e.lineno}: SyntaxError: {e.msg}")
+    if problems:
+        return False, False, "; ".join(problems)
+    return True, False, "файлы на месте и компилируются"
+
+
+def file_state(node: dict, ctx) -> dict:
+    """mtime и размер файлов подзадачи — чтобы понять, трогал ли их субагент."""
+    state = {}
+    for rel in node.get("files") or []:
+        try:
+            st = ctx.resolve(rel).stat()
+            state[rel] = (st.st_mtime_ns, st.st_size)
+        except Exception:  # noqa: BLE001
+            state[rel] = None
+    return state
 
 
 # ---------------------------------------------------------------- контракт
@@ -208,19 +249,32 @@ class Executor:
         if not self.ui.quiet:
             print(yellow(f"  ▶ {node['id']}  {node['title']}"))
 
-        # Предпроверка: если критерий зелёный ещё до работы, он ничего не проверяет.
-        ok, broken, output = self._check(node, strict=False)
-        if broken:
-            node.update(status="blocked", error="проверку не разрешили запустить: "
-                                                + _tail(output, 300))
-            return
-        if ok:
-            node.update(status="blocked",
-                        error=("приёмка проходит ещё до работы над подзадачей — такой критерий "
-                               "ничего не проверяет, замените его на конкретный"))
-            return
+        smoke = node["accept"].get("kind") == "smoke"
+        # Предпроверка: если критерий зелёный ещё до работы, он ничего не проверяет —
+        # но только пока в плане ничего не сделано. Если зелёным его сделали предыдущие
+        # подзадачи (субагент сделал больше своей части — частый случай на 4B), это готовая
+        # работа, а не пустой критерий: блокировать её значит сломать весь план.
+        if not smoke:
+            ok, broken, output = self._check(node, strict=False)
+            if broken:
+                node.update(status="blocked", error="проверку не разрешили запустить: "
+                                                    + _tail(output, 300))
+                return
+            if ok:
+                if any(n["status"] == "done" for n in self.plan if n is not node):
+                    node.update(status="done", error="",
+                                note="приёмка уже зелёная после предыдущих подзадач")
+                    self.stats["already_done"] = self.stats.get("already_done", 0) + 1
+                    if not self.ui.quiet:
+                        print(green(f"  ☑ {node['id']}  уже выполнена предыдущими подзадачами"))
+                    return
+                node.update(status="blocked",
+                            error=("приёмка проходит ещё до работы над подзадачей — такой критерий "
+                                   "ничего не проверяет, замените его на конкретный"))
+                return
 
         mark = self.ctx.snapshots.mark() if self.ctx.snapshots is not None else None
+        before = file_state(node, self.ctx) if smoke else None
         last_error = ""
         for attempt in range(1, max_attempts + 1):
             node["attempts"] += 1
@@ -233,6 +287,9 @@ class Executor:
                 node.update(status="failed", error="прервано пользователем")
                 raise
             ok, broken, output = self._check(node)
+            if ok and smoke and file_state(node, self.ctx) == before:
+                ok, output = False, ("ни один из файлов подзадачи (" + ", ".join(node["files"])
+                                     + ") не изменился — работа не сделана")
             if ok:
                 node.update(status="done", error="", note=_tail(report, MAX_REPORT_TAIL))
                 self._save_result(node, report)

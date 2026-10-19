@@ -1,7 +1,7 @@
 """Разбиение задачи (граф подзадач), режим плана и субагенты."""
 from __future__ import annotations
 
-from ..plan import MAX_NODES, PlanError, normalize
+from ..plan import MAX_NODES, PlanError, narrow_acceptance, normalize
 from ..ui import bold, dim, green
 from .base import Tool, ToolError, obj
 
@@ -56,7 +56,8 @@ class PlanWrite(Tool):
             ctx.plan_stats["rejected"] = ctx.plan_stats.get("rejected", 0) + 1
             raise ToolError(f"План не принят — {e}")
         ctx.plan_stats["writes"] = ctx.plan_stats.get("writes", 0) + 1
-        notes = ctx.plan.replace(nodes)
+        narrowed = narrow_acceptance(nodes, lambda node: find_test_for(node, ctx))
+        notes = narrowed + ctx.plan.replace(nodes)
         if not ctx.ui.quiet:
             print(ctx.plan.render())
         done, total = ctx.plan.counts()
@@ -216,3 +217,30 @@ class Task(Tool):
         if not ctx.ui.quiet:
             print(green(f"  ↳ субагент ({kind}): {args['description']}"))
         return ctx.spawn_subagent(args["description"], args["prompt"], kind)
+
+
+def find_test_for(node: dict, ctx) -> str | None:
+    """Тестовый файл, который проверяет именно эту подзадачу: сам тест среди её files
+    или tests/test_<имя модуля>.py рядом с проектом."""
+    from pathlib import Path
+
+    from .fs import IGNORED_DIRS
+    files = [str(f) for f in node.get("files") or []]
+    for rel in files:
+        p = Path(rel)
+        if p.suffix == ".py" and (p.name.startswith("test_") or p.stem.endswith("_test")
+                                  or "tests" in p.parts):
+            return rel
+    stems = [Path(rel).stem for rel in files if Path(rel).suffix == ".py"]
+    stems = [s for s in stems if s not in ("__init__", "__main__", "main", "setup", "conftest")]
+    if not stems:
+        return None
+    root = Path(ctx.cwd)
+    for stem in stems:
+        for pattern in (f"test_{stem}.py", f"{stem}_test.py"):
+            for found in sorted(root.rglob(pattern)):
+                rel = found.relative_to(root)
+                if any(part in IGNORED_DIRS or part.startswith(".") for part in rel.parts[:-1]):
+                    continue
+                return str(rel)
+    return None

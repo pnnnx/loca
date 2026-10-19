@@ -24,6 +24,9 @@ import re
 STATUSES = ("pending", "running", "done", "failed", "blocked")
 ICONS = {"pending": "☐", "running": "◐", "done": "☑", "failed": "✗", "blocked": "⊘"}
 ACCEPT_KINDS = ("tests", "cmd", "symbol")
+# «smoke» модель не присылает: так исполнитель помечает промежуточную подзадачу, для которой
+# не нашлось своего теста (см. narrow_acceptance)
+INTERNAL_KINDS = ("smoke",)
 MAX_NODES = 8
 ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,16}$")
 VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,47}$")
@@ -123,6 +126,10 @@ def accept_text(node: dict) -> str:
     if kind == "symbol":
         where = f" в {accept['path']}" if accept.get("path") else ""
         return f"определение `{accept['name']}`{where} существует"
+    if kind == "smoke":
+        files = ", ".join(node.get("files") or []) or "файлы подзадачи"
+        return (f"{files} изменены и компилируются (весь набор тестов проверит последняя "
+                "подзадача — сейчас он может быть ещё красным, это нормально)")
     bits = []
     if accept.get("target"):
         bits.append(accept["target"])
@@ -200,6 +207,49 @@ def normalize(raw_nodes) -> list[dict]:
             "(«проверить», «запустить тесты»), и у них нет files. Проверка живёт в accept "
             "каждой подзадачи; в плане должны быть изменения кода с указанными files.")
     return nodes
+
+
+def is_whole_suite(node: dict) -> bool:
+    accept = node.get("accept") or {}
+    return accept.get("kind") == "tests" and not accept.get("target") and not accept.get("pattern")
+
+
+def narrow_acceptance(nodes: list[dict], find_test=None) -> list[str]:
+    """Чинит главную ловушку плана: «весь набор тестов» у промежуточных подзадач.
+
+    Тесты описывают конечное состояние, поэтому промежуточная подзадача честно делает
+    свою часть, набор остаётся красным — и её верная правка откатывается (прогоны
+    hard3 и Kaggle 19.10: из трёх планов ни один не дошёл до конца). Замечание
+    в ответе plan_write модель игнорировала, поэтому сужаем сами:
+
+    * весь набор остаётся только у последней подзадачи-«стока» (от неё никто не зависит);
+    * остальным — их собственный тестовый файл, если он находится (`find_test(node)`);
+    * иначе — «smoke»: файлы подзадачи изменены и компилируются.
+
+    Возвращает замечания для ответа модели. Меняет nodes на месте.
+    """
+    if len(nodes) < 2:
+        return []
+    whole = [n for n in nodes if is_whole_suite(n)]
+    if not whole:
+        return []
+    depended = {d for n in nodes for d in n["depends_on"]}
+    sinks = [n for n in whole if n["id"] not in depended]
+    keep = sinks[-1] if sinks else None
+    notes = []
+    for node in whole:
+        if node is keep:
+            continue
+        target = find_test(node) if find_test else None
+        if target:
+            node["accept"] = {"kind": "tests", "target": target}
+            notes.append(f"приёмка {node['id']} сужена до {target}")
+        else:
+            node["accept"] = {"kind": "smoke"}
+            notes.append(f"у {node['id']} своего теста нет — приёмка: файлы изменены и компилируются")
+    if notes and keep is not None:
+        notes.append(f"весь набор тестов проверит {keep['id']}")
+    return notes
 
 
 def find_cycle(nodes: list[dict]) -> list[str]:
