@@ -227,6 +227,16 @@ class ReadSymbol(Tool):
         name = str(args["name"]).strip().strip("()")
         if not name:
             raise ToolError("name пустой")
+        if not args.get("path"):
+            module = _module_file(name, ctx)
+            if module is not None:
+                path, rest = module
+                if not rest:      # «app.cli» — это модуль, а не символ: показываем его карту
+                    outline_text = RepoMap().run({"path": ctx.rel(path)}, ctx)
+                    return (f"'{name}' — это модуль {ctx.rel(path)}, а не функция. Его состав:\n"
+                            f"{outline_text}\nread_symbol с именем функции или класса покажет код.")
+                args = {**args, "name": rest, "path": ctx.rel(path)}
+                name = rest
         base = ctx.resolve(args.get("path") or ".")
         if not base.exists():
             raise ToolError(f"Нет такого пути: {ctx.rel(base)}")
@@ -264,3 +274,23 @@ class ReadSymbol(Tool):
         body = "\n".join(f"{str(i).rjust(width)}\t{line[:500]}"
                          for i, line in enumerate(lines, start))
         return truncate(f"{ctx.rel(path)}:{start}-{end}\n{body}", ctx.cfg["max_tool_output"])
+
+
+def _module_file(dotted: str, ctx):
+    """'pkg.core.calc_total' → (pkg/core.py, 'calc_total'); 'app.cli' → (app/cli.py, '').
+
+    Модели часто зовут read_symbol с путём модуля в стиле import. Ищем самый длинный
+    префикс, который является файлом или пакетом проекта; остаток — имя символа.
+    """
+    name = dotted.replace("/", ".")
+    if name.endswith(".py"):
+        name = name[:-3]
+    parts = [p for p in name.split(".") if p]
+    if len(parts) < 2 and not (ctx.cwd / f"{name}.py").is_file():
+        return None
+    for i in range(len(parts), 0, -1):
+        base = ctx.cwd.joinpath(*parts[:i])
+        for candidate in (base.with_suffix(".py"), base / "__init__.py"):
+            if candidate.is_file():
+                return candidate, ".".join(parts[i:])
+    return None

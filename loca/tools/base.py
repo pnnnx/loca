@@ -55,6 +55,12 @@ class ToolContext:
         p = Path(path).expanduser()
         if not p.is_absolute():
             p = self.cwd / p
+        elif not p.exists() and not p.parent.exists():
+            # маленькая модель пишет «/app/config.py», имея в виду app/config.py проекта:
+            # такого корня нет, а относительный путь есть — берём его
+            candidate = self.cwd / p.relative_to(p.anchor)
+            if candidate.exists() or candidate.parent.exists():
+                p = candidate
         return p.resolve()
 
     def rel(self, p: Path) -> str:
