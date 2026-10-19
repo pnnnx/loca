@@ -41,8 +41,26 @@ SPEC_SYSTEM = """\
 
 Правила:
 - Не добавляй требований от себя. Всё, чего пользователь не сказал, — это предположение, а не цель.
-- Пути бери только из карты проекта. Если нужного файла нет — так и напиши.
-- Критерий готовности должен проверяться запуском, а не словами «работает правильно»."""
+- Если просьба размытая («сделай лучше», «добавь X» без подробностей) — НЕ придумывай цель: задай
+  вопросы, от ответа на которые зависит, что именно делать.
+- Пути бери только из карты проекта. «(новый)» — только для файла, которого в карте нет.
+- Критерий готовности должен проверяться запуском (команда или тест), а не словами «работает правильно».
+
+Пример размытой просьбы «добавь логирование» в проекте с app/server.py:
+Цель: добавить логирование в app/server.py (что и куда логировать — уточнить)
+Файлы: app/server.py
+Ограничения: нет
+Готово, когда: `python -m pytest -q` проходит и при запуске сервера в лог пишутся строки
+Предположения: модуль logging из стандартной библиотеки
+Вопросы: 1) Что логировать: запросы, ошибки, всё? 2) Куда: в консоль или в файл?
+
+Пример ясной просьбы «в app/util.py функция slug(s) должна убирать пробелы по краям»:
+Цель: slug(s) в app/util.py обрезает пробелы по краям строки
+Файлы: app/util.py
+Ограничения: остальное поведение slug не менять
+Готово, когда: `python -c "from app.util import slug; assert slug(' a ') == slug('a')"` проходит
+Предположения: нет
+Вопросы: нет"""
 
 CONFIRM_HINT = "Enter — выполнять · текст — поправить/ответить на вопросы · n — отмена"
 SPEC_MARK = "[Задание, подтверждённое пользователем]"
@@ -84,7 +102,69 @@ def make_spec(llm, ctx, request: str, corrections: list[str] | None = None) -> s
     user.append("Составь задание строго в заданном формате.")
     resp = llm.chat([{"role": "system", "content": SPEC_SYSTEM},
                      {"role": "user", "content": "\n\n".join(user)}], tools=None, think=False)
-    return clean_spec(resp.content)
+    return check_spec(clean_spec(resp.content), request, ctx)
+
+
+FIELDS = ("Цель", "Файлы", "Ограничения", "Готово, когда", "Предположения", "Вопросы")
+_PATH_RE = re.compile(r"(?<![\w/])/?(?:[\w.-]+/)*[\w-]+\.(?:py|pyi|js|jsx|ts|tsx|go|rs|java|c|h|cpp|"
+                      r"json|toml|ya?ml|md|txt|cfg|ini|sh)\b")
+_ANCHOR_RE = re.compile(r"[\w-]+\.\w{1,4}\b|`|\w+\(|\b[a-z]+_[a-z_]+\b|\b[a-z]+[A-Z]\w*|\d")
+_NONE_RE = re.compile(r"^[\s«»\"'.*-]*(нет|none|—|-)?[\s«»\"'.*]*$", re.I)
+
+
+def is_vague(request: str) -> bool:
+    """Короткая просьба без единой зацепки: ни файла, ни имени из кода, ни числа."""
+    text = (request or "").strip()
+    return len(text.split()) <= 10 and not _ANCHOR_RE.search(text)
+
+
+def _field_line(text: str, name: str) -> re.Match | None:
+    names = "|".join(map(re.escape, FIELDS))
+    return re.search(rf"^(\W*{re.escape(name)}\W*:)(.*?)(?=^\W*(?:{names})\W*:|\Z)", text, re.M | re.S)
+
+
+def check_spec(spec: str, request: str, ctx) -> str:
+    """Поправки, которые не зависят от модели (маленькая модель их стабильно путает).
+
+    - «(новый)» у файла, который есть в проекте, — снимаем; файл, которого нет и не помечен
+      «(новый)», — помечаем «(нет в проекте)»: человек увидит выдуманный путь до работы.
+    - размытая просьба без вопросов и предположений — модель додумала цель сама: добавляем вопрос.
+    """
+    m = _field_line(spec, "Файлы")
+    if m:
+        body = m.group(2)
+
+        def fix(pm: re.Match) -> str:
+            rel = pm.group(0)
+            try:
+                exists = ctx.resolve(rel).exists()
+            except Exception:  # noqa: BLE001
+                return rel
+            tail = body[pm.end():pm.end() + 12].lower()
+            if exists:
+                return ctx.rel(ctx.resolve(rel))
+            return rel if "нов" in tail else rel + " (нет в проекте)"
+
+        new_body = _PATH_RE.sub(fix, body)
+        for pm in _PATH_RE.finditer(new_body):
+            try:
+                if ctx.resolve(pm.group(0)).exists():
+                    new_body = re.sub(rf"({re.escape(pm.group(0))}\W{{0,3}})\(новый\)", r"\1", new_body)
+            except Exception:  # noqa: BLE001
+                pass
+        new_body = re.sub(r"[ \t]{2,}", " ", new_body)
+        spec = spec[:m.start(2)] + new_body + spec[m.end(2):]
+    q, a = _field_line(spec, "Вопросы"), _field_line(spec, "Предположения")
+    no_q = not q or _NONE_RE.match(q.group(2).strip())
+    no_a = not a or _NONE_RE.match(a.group(2).strip())
+    if is_vague(request) and no_q and no_a:
+        ask = ("1) Просьба без подробностей — что именно должно измениться и как это проверить "
+               "(пример входа и ожидаемого результата)?")
+        if q:
+            spec = spec[:q.start(2)] + " " + ask + "\n" + spec[q.end(2):]
+        else:
+            spec = spec.rstrip() + f"\nВопросы: {ask}"
+    return spec.strip()
 
 
 def clean_spec(text: str) -> str:
