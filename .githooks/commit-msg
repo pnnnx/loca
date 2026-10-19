@@ -1,0 +1,15 @@
+#!/bin/sh
+# Коммит — это запись в документации: сообщение в markdown с разделами Что / Как / Зачем / Проверка.
+# Шаблон: .gitmessage. Обойти в крайнем случае: git commit --no-verify
+msg="$1"
+head -1 "$msg" | grep -q '^Merge ' && exit 0
+missing=""
+for s in "Что" "Как" "Зачем" "Проверка"; do
+  grep -q "^## $s" "$msg" || missing="$missing ## $s"
+done
+if [ -n "$missing" ]; then
+  echo "✗ В сообщении коммита нет разделов:$missing"
+  echo "  Формат — .gitmessage (git commit без -m откроет шаблон)."
+  exit 1
+fi
+exit 0

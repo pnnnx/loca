@@ -1,0 +1,10 @@
+#!/bin/sh
+# Каждое изменение проекта записывается в журнал: без docs/JOURNAL.md в коммите — не коммитим.
+# Исключение — коммит, который меняет только документацию.
+files=$(git diff --cached --name-only)
+[ -z "$files" ] && exit 0
+echo "$files" | grep -q '^docs/JOURNAL.md$' && exit 0
+echo "$files" | grep -qv -e '\.md$' -e '^docs/' || exit 0
+echo "✗ В коммите нет записи в docs/JOURNAL.md."
+echo "  Добавьте запись сверху журнала: дата, что, как, зачем, проверка — и git add docs/JOURNAL.md"
+exit 1
