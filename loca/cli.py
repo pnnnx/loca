@@ -10,12 +10,13 @@ from pathlib import Path
 from . import __version__, hooks
 from .agent import Agent
 from .config import HOME_DIR, ensure_home, load_config
-from .llm import LLMError, OllamaClient
+from .llm import LLMError, make_client
 from .mcp import MCPManager
 from .memory import INIT_PROMPT, add_memory, find_memory_files
 from .permissions import MODES, Permissions
 from .session import Session, list_sessions
 from .snapshots import Snapshots
+from .spec import confirm_loop, needs_spec
 from .tools import ToolContext, ToolError, main_tools
 from .tools.tests import RunTests, detect_test_command
 from .ui import UI, bold, cyan, dim, green, yellow
@@ -34,6 +35,8 @@ HELP = """\
   /model [имя]          показать / сменить модель (список — без аргумента)
   /mode [режим]         default | accept-edits | plan | yolo
   /think                включить / выключить режим размышлений
+  /spec [auto|always|off]  задание с подтверждением перед работой (по умолчанию auto)
+  /grumpy [on|off]      режим «ворчун»: реакции с матом (для дообученной модели)
   /plan-show            текущий граф подзадач (то же — /todos)
   /undo                 откатить последнюю правку файла
   /hooks                какие хуки настроены
@@ -77,6 +80,7 @@ class App:
         self.cwd = Path(args.cwd or os.getcwd()).resolve()
         ensure_home()
         overrides = {"model": args.model, "num_ctx": args.ctx, "host": args.host,
+                     "backend": getattr(args, "backend", None),
                      "max_seconds": getattr(args, "max_seconds", None)}
         if args.yolo:
             overrides["permission_mode"] = "yolo"
@@ -84,10 +88,12 @@ class App:
             overrides["permission_mode"] = args.mode
         if args.think:
             overrides["think"] = True
+        if getattr(args, "grumpy", False):
+            overrides["grumpy"] = True
         self.cfg = load_config(self.cwd, overrides)
         self.headless = bool(args.print)
         self.ui = UI()
-        self.llm = OllamaClient(self.cfg)
+        self.llm = make_client(self.cfg)
         self.permissions = Permissions(self.cfg, interactive=not self.headless)
         self.ctx = ToolContext(cwd=self.cwd, cfg=self.cfg, ui=self.ui, permissions=self.permissions)
         self.mcp = MCPManager(self.cfg.get("mcp_servers", {}), self.ui) if self.cfg.get("mcp_servers") else None
@@ -189,9 +195,13 @@ class App:
             print(dim("хуки: " + ", ".join(active)))
         print(dim("/help — команды, #заметка — в память, Ctrl+D — выход"))
         try:
-            models = self.llm.list_models()
-            if not any(m == self.llm.model or m.split(":")[0] == self.llm.model for m in models):
-                self.ui.warn(f"Модель {self.llm.model} не скачана. Выполните: ollama pull {self.llm.model}")
+            if getattr(self.llm, "backend", "ollama") == "llamacpp":
+                self.llm.sync()
+                print(dim(f"llama.cpp: {self.llm.host} · модель {self.llm.model} · контекст {self.llm.num_ctx}"))
+            else:
+                models = self.llm.list_models()
+                if not any(m == self.llm.model or m.split(":")[0] == self.llm.model for m in models):
+                    self.ui.warn(f"Модель {self.llm.model} не скачана. Выполните: ollama pull {self.llm.model}")
         except LLMError as e:
             self.ui.error(str(e))
 
@@ -222,6 +232,15 @@ class App:
             self.ui.info("Новый диалог.")
         elif name == "compact":
             self.agent.compact()
+        elif name == "spec":
+            if rest in ("on", "off", "auto", "always"):
+                self.cfg["spec"] = "always" if rest == "on" else rest
+            self.ui.info(f"Задание перед работой: {self.cfg.get('spec', 'auto')} "
+                         "(/spec auto | always | off)")
+        elif name == "grumpy":
+            self.cfg["grumpy"] = (rest == "on") if rest in ("on", "off") else not self.cfg.get("grumpy")
+            self.agent.refresh_system()
+            self.ui.info("Режим «ворчун»: " + ("включён" if self.cfg["grumpy"] else "выключен"))
         elif name == "context":
             u = self.agent.usage
             print(f"контекст: ~{self.agent.context_tokens()} / {self.llm.num_ctx} токенов · "
@@ -331,6 +350,19 @@ class App:
         self.agent.messages.append({"role": "assistant", "content": "Noted."})
 
     def ask(self, text: str) -> str:
+        if not self.headless and needs_spec(text, self.cfg):
+            self.ui.info("составляю задание…  (/spec off — отключить)")
+            try:
+                text = confirm_loop(self.llm, self.ctx, text,
+                                    ask=lambda hint: input(dim(hint) + "\n› "),
+                                    show=lambda spec: print(yellow("Понял задачу так:") + "\n" + spec))
+            except (LLMError, KeyboardInterrupt, EOFError) as e:
+                if isinstance(e, LLMError):
+                    self.ui.error(str(e))
+                return ""
+            if text is None:
+                self.ui.info("Отменено.")
+                return ""
         answer = self.agent.run(text)
         self.save()
         return answer
@@ -384,10 +416,12 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("-p", "--print", action="store_true", help="выполнить запрос и выйти (без диалога)")
     p.add_argument("-m", "--model")
     p.add_argument("--ctx", type=int, help="размер контекста (num_ctx)")
-    p.add_argument("--host", help="адрес Ollama")
+    p.add_argument("--host", help="адрес Ollama или llama-server")
+    p.add_argument("--backend", choices=["ollama", "llamacpp"], help="чем запускать модель")
     p.add_argument("--mode", choices=MODES)
     p.add_argument("--yolo", action="store_true", help="не спрашивать разрешений (кроме опасных команд)")
     p.add_argument("--think", action="store_true", help="включить размышления модели")
+    p.add_argument("--grumpy", action="store_true", help="режим «ворчун» (реакции с матом)")
     p.add_argument("-c", "--continue", dest="continue_", action="store_true", help="продолжить последнюю сессию")
     p.add_argument("-r", "--resume", metavar="ID")
     p.add_argument("--cwd")

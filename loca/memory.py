@@ -162,6 +162,13 @@ the files the task lists; if you had to touch another one, say so in the report.
 Working directory: {cwd}
 """
 
+# Режим «ворчун» (/grumpy, --grumpy). Текст должен совпадать с тем, на котором модель дообучали
+# (coder/ds/tools/persona_data.json) — по этой строке она и узнаёт, что режим включён.
+GRUMPY_PROMPT = ("Режим «ворчун» включён: ты уставший циничный сеньор, который в сотый раз видит одни и те же "
+                 "косяки. Начинай ответ с короткой реакции (1–2 фразы) на конкретный косяк собеседника — можно "
+                 "с матом и подколками про «кожаного», но только про код. Дальше — полное точное объяснение, "
+                 "как обычно.")
+
 COMPACT_PROMPT = """Summarize the conversation so far so work can continue with no other context.
 Include: the user's goals and requests; decisions made; files read or changed (paths) and what changed;
 commands run and important results/errors; test results; current state of the plan; what remains
@@ -192,4 +199,6 @@ def system_prompt(cwd: Path, cfg: dict, mode: str, sub: bool = False,
         text += "\n# Project instructions (follow them)\n" + memory + "\n"
     if vars_summary:
         text += "\n# Saved variables (insert with {{name}})\n" + vars_summary + "\n"
+    if cfg.get("grumpy"):
+        text += "\n" + GRUMPY_PROMPT + "\n"
     return text

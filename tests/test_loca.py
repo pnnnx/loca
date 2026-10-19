@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -1587,3 +1588,248 @@ def test_pytest_missing_falls_back_to_unittest(tmp_path):
     assert looks_broken("ModuleNotFoundError: No module named 'pytest'", 1)
     assert looks_broken("/usr/bin/python3: No module named pytest", 1)
     assert not looks_broken("FAILED (failures=2)", 1)
+
+
+# ---------------------------------------------------------------- приёмка промежуточных подзадач
+def test_plan_write_narrows_whole_suite_acceptance(tmp_path):
+    """Kaggle 19.10: у всех подзадач «весь набор тестов» → ни один план не дошёл до конца.
+    Теперь весь набор остаётся только у последней, остальным — свой тест или smoke."""
+    from loca.tools.agentic import PlanWrite
+    ctx = plan_ctx(tmp_path)
+    (tmp_path / "app").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_format.py").write_text("def test_x():\n    pass\n")
+    out = PlanWrite().run({"tasks": [
+        {"id": "n1", "title": "width в config", "files": ["app/config.py"], "accept": {"kind": "tests"}},
+        {"id": "n2", "title": "обрезка в format_row", "files": ["app/format.py"],
+         "depends_on": ["n1"], "accept": {"kind": "tests"}},
+        {"id": "n3", "title": "флаг --width", "files": ["app/cli.py"],
+         "depends_on": ["n2"], "accept": {"kind": "tests"}},
+    ]}, ctx)
+    n1, n2, n3 = (ctx.plan.get(i) for i in ("n1", "n2", "n3"))
+    assert n1["accept"] == {"kind": "smoke"}
+    assert n2["accept"] == {"kind": "tests", "target": "tests/test_format.py"}
+    assert n3["accept"] == {"kind": "tests"}                      # сток проверяет всё
+    assert "сужена до tests/test_format.py" in out and "весь набор тестов проверит n3" in out
+    # одиночная подзадача с полным набором — нормальна, её не трогаем
+    from loca.plan import narrow_acceptance, normalize
+    single = normalize([{"title": "x", "files": ["a.py"], "accept": {"kind": "tests"}}])
+    assert narrow_acceptance(single) == [] and single[0]["accept"] == {"kind": "tests"}
+
+
+def test_executor_counts_already_green_as_done(tmp_path):
+    """Субагент сделал больше своей части: следующая приёмка уже зелёная — это готово, а не blocked."""
+    from loca.executor import Executor
+    spawned = []
+
+    def spawn(description, prompt, kind):
+        spawned.append(description)
+        (tmp_path / "a.py").write_text("def f():\n    return 1\n")
+        (tmp_path / "b.py").write_text("print('b')\n")          # заодно сделал и n2
+        return "сделал всё"
+
+    ctx = plan_ctx(tmp_path, spawn)
+    set_plan(ctx, [
+        {"id": "n1", "title": "создать a.py", "files": ["a.py"],
+         "accept": {"kind": "symbol", "path": "a.py", "name": "f"}},
+        {"id": "n2", "title": "создать b.py", "files": ["b.py"], "depends_on": ["n1"],
+         "accept": {"kind": "cmd", "command": "python3 b.py"}},
+    ])
+    report = Executor(ctx).run()
+    assert [n["status"] for n in ctx.plan] == ["done", "done"] and spawned == ["n1: создать a.py"]
+    assert "2/2 подзадач готово" in report and ctx.plan_stats["already_done"] == 1
+    assert "предыдущих" in ctx.plan.get("n2")["note"]
+
+
+def test_executor_smoke_acceptance(tmp_path):
+    from loca.executor import Executor
+    (tmp_path / "cfg.py").write_text("DEFAULTS = {}\n")
+    behaviours = iter(["noop", "broken", "good"])
+
+    def spawn(description, prompt, kind):
+        b = next(behaviours)
+        if b == "broken":
+            ctx.snapshots.record(tmp_path / "cfg.py", "edit_file")
+            (tmp_path / "cfg.py").write_text("DEFAULTS = {\n")
+        elif b == "good":
+            ctx.snapshots.record(tmp_path / "cfg.py", "edit_file")
+            (tmp_path / "cfg.py").write_text("DEFAULTS = {'width': 8}\n")
+        return b
+
+    ctx = plan_ctx(tmp_path, spawn, plan_max_attempts=3)
+    plan = set_plan(ctx, [{"id": "n1", "title": "width", "files": ["cfg.py"], "accept": {"kind": "tests"}},
+                          {"id": "n2", "title": "конец", "files": ["x.py"], "depends_on": ["n1"],
+                           "accept": {"kind": "tests"}}])
+    plan.get("n1")["accept"] = {"kind": "smoke"}
+    plan.get("n2")["status"] = "done"                         # проверяем только n1
+    Executor(ctx).run()
+    node = plan.get("n1")
+    assert node["status"] == "done" and node["attempts"] == 3
+    assert (tmp_path / "cfg.py").read_text() == "DEFAULTS = {'width': 8}\n"
+    assert "компилируются" in __import__("loca.plan", fromlist=["accept_text"]).accept_text(node)
+
+
+def test_resolve_fixes_rootless_absolute_paths(tmp_path):
+    ctx = make_ctx(tmp_path)
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "config.py").write_text("X = 1\n")
+    assert ctx.resolve("/app/config.py") == (tmp_path / "app" / "config.py").resolve()
+    assert ctx.resolve("/app/new.py") == (tmp_path / "app" / "new.py").resolve()   # новый файл
+    assert ctx.resolve(str(tmp_path / "app" / "config.py")) == (tmp_path / "app" / "config.py").resolve()
+    assert str(ctx.resolve("/etc/hosts")) == str(Path("/etc/hosts").resolve())     # настоящий путь не трогаем
+
+
+def test_read_symbol_accepts_module_paths(tmp_path):
+    from loca.tools.codemap import ReadSymbol
+    ctx = make_ctx(tmp_path)
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("from pkg.core import calc_total\n")
+    (tmp_path / "pkg" / "core.py").write_text("def calc_total(items):\n    return sum(items)\n\n\ndef other():\n    pass\n")
+    out = ReadSymbol().run({"name": "pkg.core"}, ctx)
+    assert "это модуль pkg/core.py" in out and "calc_total" in out
+    out = ReadSymbol().run({"name": "pkg.core.calc_total"}, ctx)
+    assert "return sum(items)" in out and "other" not in out
+    out = ReadSymbol().run({"name": "pkg.__init__"}, ctx)
+    assert "pkg/__init__.py" in out
+
+
+# ---------------------------------------------------------------- задание и «сначала запусти»
+def test_needs_spec_and_verification_heuristics():
+    from loca.agent import needs_verification
+    from loca.spec import needs_spec
+    auto = {"spec": "auto"}
+    assert needs_spec("добавь флаг --width в cli", auto)
+    assert needs_spec("переименуй calc_total во всём проекте", auto)
+    assert needs_spec("как добавить флаг? добавь его в cli.py", auto)
+    assert not needs_spec("почему тест падает после рефакторинга", auto)   # вопрос, не просьба
+    assert not needs_spec("объясни функцию parse", auto)
+    assert not needs_spec("добавь флаг", {"spec": "off"}) and needs_spec("привет", {"spec": "always"})
+    assert needs_verification("что выведет этот код?") and needs_verification("почему у меня ошибка KeyError")
+    assert needs_verification("What will this print?") and not needs_verification("объясни функцию parse")
+
+
+class _StubLLM:
+    def __init__(self, replies):
+        self.replies, self.calls = list(replies), []
+
+    def chat(self, messages, tools=None, think=None, **kw):
+        from loca.llm import LLMResponse
+        self.calls.append(messages)
+        assert tools is None                       # задание пишется без инструментов
+        return LLMResponse(content=self.replies.pop(0))
+
+
+def test_confirm_loop_accept_correct_cancel(tmp_path):
+    from loca.spec import SPEC_MARK, confirm_loop
+    ctx = make_ctx(tmp_path)
+    (tmp_path / "cli.py").write_text("def main():\n    pass\n")
+    shown = []
+
+    llm = _StubLLM(["Цель: флаг --width\nФайлы: cli.py\nВопросы: обрезать с «…»?",
+                    "Цель: флаг --width, обрезать с «…»\nФайлы: cli.py\nВопросы: нет"])
+    answers = iter(["да, с многоточием", ""])
+    text = confirm_loop(llm, ctx, "добавь флаг --width", ask=lambda h: next(answers), show=shown.append)
+    assert SPEC_MARK in text and "обрезать с «…»" in text and "да, с многоточием" in text
+    assert len(llm.calls) == 2 and "Уточнение пользователя 1" in llm.calls[1][1]["content"]
+    assert "cli.py" in llm.calls[0][1]["content"]                 # карта проекта в запросе
+    assert len(shown) == 2
+
+    llm = _StubLLM(["Цель: удалить всё"])
+    assert confirm_loop(llm, ctx, "удали лишнее", ask=lambda h: "n", show=shown.append) is None
+
+
+def test_headless_skips_spec_and_verify_nudge_reaches_model(tmp_path, capsys):
+    (tmp_path / "app.py").write_text("print(sum([0.1] * 3))\n")
+    fake = FakeOllama([{"content": "Выведет 0.30000000000000004."},
+                       {"content": "Готово."}])
+    from loca.cli import main
+    main(["-p", "--yolo", "--host", fake.url, "-m", "fake:1b", "--cwd", str(tmp_path),
+          "что выведет app.py?"])
+    main(["-p", "--yolo", "--host", fake.url, "-m", "fake:1b", "--cwd", str(tmp_path),
+          "добавь флаг --width в app.py"])
+    fake.close()
+    first, second = fake.requests[0], fake.requests[1]
+    assert first["tools"] and second["tools"]          # в -p задание не запрашивалось
+    assert any("RUN it" in m["content"] for m in first["messages"] if m["role"] == "user")
+    assert not any("RUN it" in m["content"] for m in second["messages"] if m["role"] == "user")
+
+
+def test_interactive_ask_confirms_spec_first(tmp_path, monkeypatch, capsys):
+    import argparse
+    from loca.cli import App
+    from loca.spec import SPEC_MARK
+    (tmp_path / "app.py").write_text("print('x')\n")
+    fake = FakeOllama([{"content": "Цель: флаг --width\nФайлы: app.py\nГотово, когда: python3 app.py --width 3"},
+                       {"content": "Сделал."}])
+    args = argparse.Namespace(cwd=str(tmp_path), model="fake:1b", ctx=None, host=fake.url,
+                              max_seconds=None, yolo=True, mode=None, think=False, print=False,
+                              resume=None, continue_=False)
+    app = App(args)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "")
+    app.ask("добавь флаг --width в app.py")
+    fake.close()
+    assert "tools" not in fake.requests[0] or not fake.requests[0]["tools"]   # запрос задания
+    sent = [m["content"] for m in fake.requests[1]["messages"] if m["role"] == "user"]
+    assert any(SPEC_MARK in c and "python3 app.py --width 3" in c for c in sent)
+    assert "Понял задачу так" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- llama.cpp
+def test_to_openai_messages_links_tool_results():
+    from loca.llm import to_openai_messages
+    out = to_openai_messages([
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "u"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "read_file", "arguments": {"path": "a.py"}}},
+            {"function": {"name": "grep", "arguments": {"pattern": "x"}}}]},
+        {"role": "tool", "content": "A", "tool_name": "read_file"},
+        {"role": "tool", "content": "B", "tool_name": "grep"},
+        {"role": "assistant", "content": "ok"},
+    ])
+    ids = [c["id"] for c in out[2]["tool_calls"]]
+    assert ids == ["call_1", "call_2"] and [m["tool_call_id"] for m in out[3:5]] == ids
+    assert out[2]["tool_calls"][0]["function"]["arguments"] == '{"path": "a.py"}'
+    assert "tool_name" not in out[3] and out[5] == {"role": "assistant", "content": "ok"}
+
+
+def test_llamacpp_backend_end_to_end(tmp_path, capsys):
+    from fake_llamacpp import FakeLlamaCpp
+    (tmp_path / "app.py").write_text("print('helo')\n")
+    fake = FakeLlamaCpp([
+        {"reasoning": "надо прочитать файл", "tool_calls": [("read_file", {"path": "app.py"})]},
+        {"tool_calls": [("edit_file", {"path": "app.py", "old_string": "helo", "new_string": "hello"})]},
+        {"content": "Исправил опечатку."},
+    ], n_ctx=8192)
+    from loca.cli import main
+    main(["-p", "--yolo", "--backend", "llamacpp", "--host", fake.url, "--cwd", str(tmp_path),
+          "исправь опечатку в app.py"])
+    fake.close()
+    assert (tmp_path / "app.py").read_text() == "print('hello')\n"
+    assert "Исправил" in capsys.readouterr().out
+    first, last = fake.requests[0], fake.requests[-1]
+    assert first["stream"] and first["tools"] and first["cache_prompt"]
+    assert "options" not in first and "num_ctx" not in json.dumps(first)    # контекст — у сервера
+    msgs = last["messages"]
+    assistant = [m for m in msgs if m["role"] == "assistant" and m.get("tool_calls")]
+    tool = [m for m in msgs if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in tool] == [a["tool_calls"][0]["id"] for a in assistant]
+    assert '"old_string": "helo"' in assistant[1]["tool_calls"][0]["function"]["arguments"]
+
+
+def test_llamacpp_syncs_context_and_explains_offline(tmp_path):
+    from fake_llamacpp import FakeLlamaCpp
+    from loca.llm import LLMError, LlamaCppClient, make_client
+    fake = FakeLlamaCpp([], n_ctx=12288)
+    cfg = {"backend": "llamacpp", "host": fake.url, "model": "", "num_ctx": 16384, "temperature": 0.2}
+    client = make_client(cfg)
+    assert isinstance(client, LlamaCppClient)
+    client.sync()
+    assert client.num_ctx == 12288 and cfg["num_ctx"] == 12288 and client.model == "qwen-test.gguf"
+    assert client.list_models() == ["qwen-test.gguf"]
+    fake.close()
+    dead = LlamaCppClient({"host": "http://127.0.0.1:9", "num_ctx": 4096, "temperature": 0.2})
+    with pytest.raises(LLMError, match="llama-server"):
+        dead.chat([{"role": "user", "content": "hi"}])
+    # адрес Ollama по умолчанию подменяется адресом llama-server
+    assert LlamaCppClient({"host": "http://localhost:11434", "num_ctx": 1, "temperature": 0}).host.endswith(":8080")

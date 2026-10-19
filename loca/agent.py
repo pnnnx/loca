@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 
 from . import hooks
-from .llm import LLMError, LLMResponse, OllamaClient, ToolCall
+from .llm import LLMError, LLMResponse, OllamaClient, ToolCall  # noqa: F401
 from .memory import COMPACT_PROMPT, system_prompt
 from .tools import Tool, ToolContext, ToolError, subagent_tools, truncate
 from .ui import UI, Spinner, dim
@@ -52,6 +52,29 @@ PLAN_GATE_TEXT = (
     '{"kind": "tests", "target": "tests/test_x.py"} or {"kind": "cmd", "command": "python3 main.py"}. '
     "Then call run_plan — each subtask gets a fresh subagent and its check is run for real. "
     "If what is left is genuinely one small edit, say so in one sentence and finish instead.")
+
+
+# вопросы о том, что код ДЕЛАЕТ: ответ из головы на 4–7B часто неверен, а запуск — нет
+_VERIFY_RE = re.compile(
+    r"(что\s+(он\s+|она\s+|оно\s+|это\s+|код\s+|программа\s+|функция\s+)?"
+    r"(выведет|выводит|напечата|вернёт|вернет|возвращает|произойд)"
+    r"|какой\s+(будет\s+)?(вывод|результат)"
+    r"|почему\b[^.?!\n]{0,40}?(падает|упал|ошибк|exception|выдаёт|выдает|выводит|"
+    r"не\s+работает|возвращает|работает\s+не)"
+    r"|traceback|what\s+(does|will)\b.*\b(print|output|return)|why\s+does\b.*\b(fail|crash|print|return))",
+    re.I | re.S)
+
+VERIFY_TEXT = (
+    "[reminder] This question is about what code actually does. Do not answer from memory: "
+    "first RUN it and look at the real result — the project file via bash "
+    "(`python3 path.py`, `node file.js`), the relevant tests via run_tests, or the snippet from "
+    "the question saved with write_file to .loca/scratch/snippet.py and run. Then explain the "
+    "mechanism behind the REAL output and quote it. If running is unsafe (deletes files, network, "
+    "waits for input), say so and trace the execution step by step instead.")
+
+
+def needs_verification(text: str) -> bool:
+    return bool(_VERIFY_RE.search(text or ""))
 
 
 def looks_multifile(text: str) -> bool:
@@ -270,6 +293,10 @@ class Agent:
                                   "[reminder] This touches several files: start with plan_write "
                                   "(subtasks + executable accept checks), then run_plan."})
             nudged_gate = True
+        # «что выведет / почему падает»: сначала запуск, потом объяснение
+        if (not self.sub and self.ctx.cfg.get("verify_first", True) and "bash" in self.tools
+                and needs_verification(user_text)):
+            self.messages.append({"role": "user", "content": VERIFY_TEXT})
         for step in range(1, self.max_steps + 1):
             if self.ctx.deadline and time.time() > self.ctx.deadline:
                 self.ctx.budget_hit = True

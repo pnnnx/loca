@@ -8,7 +8,12 @@ from pathlib import Path
 HOME_DIR = Path(os.environ.get("LOCA_HOME", Path.home() / ".loca"))
 
 DEFAULTS = {
+    # ollama | llamacpp. Для llamacpp host — адрес llama-server (по умолчанию :8080),
+    # контекст и модель задаются при запуске сервера (см. bin/llama.sh)
+    "backend": os.environ.get("LOCA_BACKEND", "ollama"),
     "host": os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
+    "llamacpp_host": os.environ.get("LLAMA_HOST", "http://127.0.0.1:8080"),
+    "max_output_tokens": 4096,   # потолок длины одного ответа модели (llama.cpp)
     "model": "qwen3.5:9b",
     # 16k context fits a 16 GB Mac with a 9B model if OLLAMA_KV_CACHE_TYPE=q8_0;
     # on 8 GB use a smaller model (qwen3.5:4b) or lower num_ctx
@@ -50,6 +55,11 @@ DEFAULTS = {
     "hooks": {},
     "hook_timeout": 120,
     "snapshots_keep": 200,       # сколько правок хранить для /undo
+    # задание перед работой: auto — для просьб, меняющих файлы; always; off.
+    # Только в диалоге: в -p (и в бенчмарке) подтверждать некому.
+    "spec": "auto",
+    "verify_first": True,
+    "grumpy": False,             # режим «ворчун» (/grumpy): реакции с матом — для дообученной модели        # вопросы «что выведет / почему падает» — сначала запустить код
 }
 
 

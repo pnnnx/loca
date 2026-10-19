@@ -103,6 +103,8 @@ def agent_command(args, workspace: Path, stats_path: Path, prompt: str,
         cmd += ["--ctx", str(args.ctx)]
     if args.host:
         cmd += ["--host", args.host]
+    if getattr(args, "backend", None):
+        cmd += ["--backend", args.backend]
     if args.think:
         cmd += ["--think"]
     return cmd + [prompt]
@@ -317,6 +319,7 @@ def main(argv=None) -> int:
     p.add_argument("-m", "--model")
     p.add_argument("--ctx", type=int)
     p.add_argument("--host")
+    p.add_argument("--backend", choices=["ollama", "llamacpp"])
     p.add_argument("--think", action="store_true")
     p.add_argument("--loca", help="команда запуска (по умолчанию python3 -m loca из репозитория)")
     p.add_argument("--timeout", type=int, default=420, help="жёсткий таймаут на задачу")
