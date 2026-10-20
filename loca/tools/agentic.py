@@ -1,7 +1,7 @@
 """Разбиение задачи (граф подзадач), режим плана и субагенты."""
 from __future__ import annotations
 
-from ..plan import MAX_NODES, PlanError, narrow_acceptance, normalize
+from ..plan import MAX_NODES, PlanError, fix_test_targets, narrow_acceptance, normalize
 from ..ui import bold, dim, green
 from .base import Tool, ToolError, obj
 
@@ -56,7 +56,9 @@ class PlanWrite(Tool):
             ctx.plan_stats["rejected"] = ctx.plan_stats.get("rejected", 0) + 1
             raise ToolError(f"План не принят — {e}")
         ctx.plan_stats["writes"] = ctx.plan_stats.get("writes", 0) + 1
-        narrowed = narrow_acceptance(nodes, lambda node: find_test_for(node, ctx))
+        finder = lambda node: find_test_for(node, ctx)  # noqa: E731
+        narrowed = (fix_test_targets(nodes, lambda rel: locate_test_file(rel, ctx), finder)
+                    + narrow_acceptance(nodes, finder))
         notes = narrowed + ctx.plan.replace(nodes)
         if not ctx.ui.quiet:
             print(ctx.plan.render())
@@ -217,6 +219,25 @@ class Task(Tool):
         if not ctx.ui.quiet:
             print(green(f"  ↳ субагент ({kind}): {args['description']}"))
         return ctx.spawn_subagent(args["description"], args["prompt"], kind)
+
+
+def locate_test_file(rel: str, ctx) -> str | None:
+    """Путь к тестовому файлу как есть или по имени где-нибудь в проекте (tests/test_x.py)."""
+    from pathlib import Path
+
+    from .fs import IGNORED_DIRS
+    try:
+        p = ctx.resolve(rel)
+        if p.is_file():
+            return ctx.rel(p)
+    except Exception:  # noqa: BLE001
+        pass
+    root = Path(ctx.cwd)
+    for found in sorted(root.rglob(Path(rel).name)):
+        parts = found.relative_to(root).parts
+        if not any(part in IGNORED_DIRS or part.startswith(".") for part in parts[:-1]):
+            return str(found.relative_to(root))
+    return None
 
 
 def find_test_for(node: dict, ctx) -> str | None:

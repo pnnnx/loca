@@ -214,6 +214,41 @@ def is_whole_suite(node: dict) -> bool:
     return accept.get("kind") == "tests" and not accept.get("target") and not accept.get("pattern")
 
 
+_FILE_LIKE = re.compile(r"(?:^|/)[\w.-]+\.(?:py|js|mjs|cjs|ts|tsx)$")
+
+
+def fix_test_targets(nodes: list[dict], locate, find_test=None) -> list[str]:
+    """Приёмка «тесты <файл>»: файл должен существовать и запускаться как файл.
+
+    Прогон hard_width_option на Qwen2.5-Coder-7B: модель дала подзадаче приёмку
+    {"kind": "tests", "pattern": "test_config.py"} — такого файла нет, а pattern уходит в
+    `unittest -k` (фильтр по ИМЕНАМ тестов) → «Ran 0 tests», откат, план встал на первом шаге.
+    Поэтому: имя файла в pattern/target → target с реальным путём (locate); файла нет →
+    свой тест подзадачи (find_test) или smoke. Возвращает замечания для модели.
+    """
+    notes = []
+    for node in nodes:
+        accept = node.get("accept") or {}
+        if accept.get("kind") != "tests":
+            continue
+        for key in ("pattern", "target"):
+            val = str(accept.get(key) or "").strip()
+            if not val or not _FILE_LIKE.search(val):
+                continue
+            found = locate(val)
+            if found:
+                if key != "target" or found != val:
+                    node["accept"] = {"kind": "tests", "target": found}
+                    notes.append(f"приёмка {node['id']}: тестовый файл {found}")
+            else:
+                own = find_test(node) if find_test else None
+                node["accept"] = {"kind": "tests", "target": own} if own else {"kind": "smoke"}
+                notes.append(f"у {node['id']} в приёмке файл {val}, а его нет — "
+                             + (f"проверяю {own}" if own else "приёмка: файлы изменены и компилируются"))
+            break
+    return notes
+
+
 def narrow_acceptance(nodes: list[dict], find_test=None) -> list[str]:
     """Чинит главную ловушку плана: «весь набор тестов» у промежуточных подзадач.
 

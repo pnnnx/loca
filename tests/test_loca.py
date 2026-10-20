@@ -1938,3 +1938,41 @@ def test_llamacpp_syncs_context_and_explains_offline(tmp_path):
         dead.chat([{"role": "user", "content": "hi"}])
     # адрес Ollama по умолчанию подменяется адресом llama-server
     assert LlamaCppClient({"host": "http://localhost:11434", "num_ctx": 1, "temperature": 0}).host.endswith(":8080")
+
+
+def test_plan_test_file_acceptance_is_real_and_runnable(tmp_path):
+    """hard_width_option на Qwen2.5-Coder-7B: pattern "test_config.py" (файла нет) уходил в
+    `unittest -k` → «Ran 0 tests» → откат первой же подзадачи."""
+    import subprocess
+    from loca.plan import fix_test_targets
+    from loca.tools.agentic import find_test_for, locate_test_file
+    from loca.tools.tests import RunTests
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "__init__.py").write_text("")
+    (tmp_path / "tests" / "test_cli.py").write_text(
+        "import unittest\nclass T(unittest.TestCase):\n    def test_ok(self):\n        self.assertTrue(True)\n")
+    (tmp_path / "config.py").write_text("WIDTH = 8\n")
+    (tmp_path / "cli.py").write_text("print(1)\n")
+    ctx = make_ctx(tmp_path)
+    nodes = [
+        {"id": "n1", "files": ["config.py"], "depends_on": [], "accept": {"kind": "tests", "pattern": "test_config.py"}},
+        {"id": "n2", "files": ["cli.py"], "depends_on": ["n1"], "accept": {"kind": "tests", "pattern": "test_cli.py"}},
+        {"id": "n3", "files": ["cli.py"], "depends_on": ["n2"], "accept": {"kind": "tests", "pattern": "test_width"}},
+    ]
+    notes = fix_test_targets(nodes, lambda rel: locate_test_file(rel, ctx), lambda n: find_test_for(n, ctx))
+    assert nodes[0]["accept"] == {"kind": "smoke"}                         # файла нет → smoke
+    assert nodes[1]["accept"] == {"kind": "tests", "target": "tests/test_cli.py"}
+    assert nodes[2]["accept"] == {"kind": "tests", "pattern": "test_width"}  # имя теста — не трогаем
+    assert any("test_config.py" in n for n in notes)
+    # и такой target действительно запускает 1 тест, а не «Ran 0 tests» — в обоих раннерах
+    import loca.tools.tests as tt
+    real = tt.detect_test_command
+    try:
+        for found in (("python3 -m unittest discover -s tests -t . -q", "unittest"), real(tmp_path)):
+            tt.detect_test_command = lambda cwd, f=found: f
+            command, framework = RunTests().build({"target": "tests/test_cli.py"}, ctx)
+            out = subprocess.run(command, shell=True, cwd=tmp_path, capture_output=True, text=True)
+            text = out.stdout + out.stderr
+            assert out.returncode == 0 and ("Ran 1 test" in text or "1 passed" in text), (command, text)
+    finally:
+        tt.detect_test_command = real

@@ -22,7 +22,7 @@ DEFAULTS = {
     "think": False,            # qwen3 hybrid thinking; slower but smarter
     "think_smart": True,       # думать точечно: на шаге планирования и после ошибки/падения тестов
     "keep_alive": "30m",
-    "request_timeout": 600,
+    "request_timeout": int(os.environ.get("LOCA_REQUEST_TIMEOUT", 600)),
     "permission_mode": "default",   # default | accept-edits | plan | yolo
     "max_steps": 40,
     "max_seconds": 0,            # лимит времени на один ход (0 — без лимита)

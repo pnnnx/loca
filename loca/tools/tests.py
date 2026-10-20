@@ -135,7 +135,16 @@ class RunTests(Tool):
             command, framework = found
         target = (args.get("target") or "").strip()
         pattern = (args.get("pattern") or "").strip()
-        if target:
+        if target and framework == "unittest":
+            # `unittest discover … tests/test_x.py` не работает: файл — через -p, папка — через -s
+            from pathlib import PurePosixPath
+            py = command.split()[0]
+            t = PurePosixPath(target)
+            if t.suffix == ".py":
+                command = f"{py} -m unittest discover -s {t.parent or '.'} -p {t.name} -t . -q"
+            else:
+                command = f"{py} -m unittest discover -s {t} -t . -q"
+        elif target:
             if framework == "node" and " -- " not in command:
                 command += f" -- {target}"
             else:
