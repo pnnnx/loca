@@ -1976,3 +1976,34 @@ def test_plan_test_file_acceptance_is_real_and_runnable(tmp_path):
             assert out.returncode == 0 and ("Ran 1 test" in text or "1 passed" in text), (command, text)
     finally:
         tt.detect_test_command = real
+
+
+def test_think_aloud_split_and_strip(tmp_path):
+    from loca.agent import ThinkSplitter, strip_thoughts
+    from loca.config import DEFAULTS
+    from loca.memory import THINK_ALOUD_PROMPT, system_prompt
+    text, think = [], []
+    sp = ThinkSplitter(text.append, think.append)
+    # теги приходят разрезанными по кускам, как в настоящем стриминге
+    for chunk in ["<thi", "nk>Нужно запус", "тить файл</th", "ink>Запускаю ", "tricky.py", "<", "think>ещё</think> и всё"]:
+        sp.feed(chunk)
+    sp.flush()
+    assert "".join(think) == "Нужно запустить файлещё"
+    assert "".join(text) == "Запускаю tricky.py и всё"
+    assert strip_thoughts("<think>план</think>Ответ: 14") == "Ответ: 14"
+    assert strip_thoughts("<think>оборвалось") == ""
+    on = system_prompt(tmp_path, dict(DEFAULTS, think_aloud=True), "default")
+    off = system_prompt(tmp_path, dict(DEFAULTS), "default")
+    assert THINK_ALOUD_PROMPT in on and THINK_ALOUD_PROMPT not in off
+
+
+def test_think_aloud_thoughts_shown_but_not_kept(tmp_path, capsys):
+    fake = FakeOllama([{"content": "<think>Вопрос простой, отвечу сразу.</think>Ответ: 42"}])
+    from loca.cli import main
+    main(["-p", "--yolo", "--think-aloud", "--host", fake.url, "-m", "fake:1b", "--cwd", str(tmp_path),
+          "сколько будет 6*7"])
+    fake.close()
+    out = capsys.readouterr().out
+    assert "Вопрос простой" in out and "Ответ: 42" in out
+    sys_msg = fake.requests[0]["messages"][0]["content"]
+    assert "<think>" in sys_msg

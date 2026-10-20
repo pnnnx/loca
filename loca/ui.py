@@ -82,7 +82,7 @@ class UI:
         if self.quiet:
             return
         if not self._in_think:
-            sys.stdout.write(dim("✻ "))
+            sys.stdout.write(dim("💭 "))
             self._in_think = True
         sys.stdout.write(dim(text))
         sys.stdout.flush()

@@ -35,6 +35,16 @@
   ⎿ 12 passed [tests PASSED: 12 passed · exit code 0]
 ```
 
+## Быстрый старт на Mac одной командой
+
+```bash
+brew install llama.cpp
+ln -sf ~/Developer/loca/bin/loca-local ~/.local/bin/loca-local
+loca-local                      # своя модель из ~/Downloads (my-coder-v3) или Qwen2.5-Coder-7B с HF
+```
+`loca-local` сам находит свободный порт, поднимает llama-server, ждёт загрузки модели, открывает loca и
+гасит сервер при выходе. Мысли модели видны серым (💭, `--think-aloud`, в сессии — `/think-aloud`).
+
 ## Установка
 
 ### Вариант A: llama.cpp (рекомендуется)

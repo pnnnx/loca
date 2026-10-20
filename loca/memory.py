@@ -170,6 +170,13 @@ GRUMPY_PROMPT = ("Режим «ворчун» включён: ты уставш�
                  "с матом и подколками про «кожаного», но только про код. Дальше — полное точное объяснение, "
                  "как обычно.")
 
+# «Думать вслух» (--think-aloud, /think-aloud): у Qwen2.5-Coder нет режима размышлений, поэтому
+# просим короткую мысль в <think>…</think> перед действием; loca показывает её серым и в историю не кладёт.
+THINK_ALOUD_PROMPT = (
+    "# Think aloud\nBefore each step, write a short thought inside <think>...</think> in Russian, 1-3 "
+    "sentences: what you understood, what you will do next and why. Then act (call a tool or answer). "
+    "Never put code or the final answer inside <think>.")
+
 COMPACT_PROMPT = """Summarize the conversation so far so work can continue with no other context.
 Include: the user's goals and requests; decisions made; files read or changed (paths) and what changed;
 commands run and important results/errors; test results; current state of the plan; what remains
@@ -200,6 +207,8 @@ def system_prompt(cwd: Path, cfg: dict, mode: str, sub: bool = False,
         text += "\n# Project instructions (follow them)\n" + memory + "\n"
     if vars_summary:
         text += "\n# Saved variables (insert with {{name}})\n" + vars_summary + "\n"
+    if cfg.get("think_aloud"):
+        text += "\n" + THINK_ALOUD_PROMPT + "\n"
     if cfg.get("grumpy"):
         text += "\n" + GRUMPY_PROMPT + "\n"
     return text

@@ -37,6 +37,7 @@ HELP = """\
   /think                включить / выключить режим размышлений
   /spec [auto|always|off]  задание с подтверждением перед работой (по умолчанию auto)
   /grumpy [on|off]      режим «ворчун»: реакции с матом (для дообученной модели)
+  /think-aloud [on|off] показывать короткие мысли модели перед каждым шагом
   /plan-show            текущий граф подзадач (то же — /todos)
   /undo                 откатить последнюю правку файла
   /hooks                какие хуки настроены
@@ -90,6 +91,8 @@ class App:
             overrides["think"] = True
         if getattr(args, "grumpy", False):
             overrides["grumpy"] = True
+        if getattr(args, "think_aloud", False):
+            overrides["think_aloud"] = True
         self.cfg = load_config(self.cwd, overrides)
         self.headless = bool(args.print)
         self.ui = UI()
@@ -237,6 +240,10 @@ class App:
                 self.cfg["spec"] = "always" if rest == "on" else rest
             self.ui.info(f"Задание перед работой: {self.cfg.get('spec', 'auto')} "
                          "(/spec auto | always | off)")
+        elif name in ("think-aloud", "thoughts"):
+            self.cfg["think_aloud"] = (rest == "on") if rest in ("on", "off") else not self.cfg.get("think_aloud")
+            self.agent.refresh_system()
+            self.ui.info("Мысли модели: " + ("показываю" if self.cfg["think_aloud"] else "скрыты"))
         elif name == "grumpy":
             self.cfg["grumpy"] = (rest == "on") if rest in ("on", "off") else not self.cfg.get("grumpy")
             self.agent.refresh_system()
@@ -422,6 +429,8 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--yolo", action="store_true", help="не спрашивать разрешений (кроме опасных команд)")
     p.add_argument("--think", action="store_true", help="включить размышления модели")
     p.add_argument("--grumpy", action="store_true", help="режим «ворчун» (реакции с матом)")
+    p.add_argument("--think-aloud", action="store_true", dest="think_aloud",
+                   help="показывать мысли модели (для моделей без режима размышлений)")
     p.add_argument("-c", "--continue", dest="continue_", action="store_true", help="продолжить последнюю сессию")
     p.add_argument("-r", "--resume", metavar="ID")
     p.add_argument("--cwd")

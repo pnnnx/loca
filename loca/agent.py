@@ -73,6 +73,49 @@ VERIFY_TEXT = (
     "waits for input), say so and trace the execution step by step instead.")
 
 
+class ThinkSplitter:
+    """Делит поток токенов на мысли (<think>…</think>) и обычный текст — теги могут прийти по кускам."""
+
+    OPEN, CLOSE = "<think>", "</think>"
+
+    def __init__(self, on_text, on_think):
+        self.on_text, self.on_think = on_text, on_think
+        self.inside = False
+        self.buf = ""
+
+    def feed(self, chunk: str) -> None:
+        self.buf += chunk
+        while self.buf:
+            tag = self.CLOSE if self.inside else self.OPEN
+            i = self.buf.find(tag)
+            if i >= 0:
+                self._emit(self.buf[:i])
+                self.buf = self.buf[i + len(tag):]
+                self.inside = not self.inside
+                continue
+            # хвост может оказаться началом тега — придержим его до следующего куска
+            keep = next((k for k in range(min(len(tag) - 1, len(self.buf)), 0, -1)
+                         if tag.startswith(self.buf[-k:])), 0)
+            self._emit(self.buf[:len(self.buf) - keep])
+            self.buf = self.buf[len(self.buf) - keep:]
+            break
+
+    def flush(self) -> None:
+        self._emit(self.buf)
+        self.buf = ""
+
+    def _emit(self, text: str) -> None:
+        if text:
+            (self.on_think if self.inside else self.on_text)(text)
+
+
+_THINK_RE = re.compile(r"<think>.*?(?:</think>|$)", re.S)
+
+
+def strip_thoughts(text: str) -> str:
+    return _THINK_RE.sub("", text or "").strip()
+
+
 def needs_verification(text: str) -> bool:
     return bool(_VERIFY_RE.search(text or ""))
 
@@ -323,20 +366,24 @@ class Agent:
         spinner = Spinner().start()
         self.ui.begin_stream()
 
-        def on_token(t: str) -> None:
-            spinner.stop()
-            self.ui.token(t)
-
         def on_think(t: str) -> None:
             spinner.stop()
             self.ui.think_token(t)
 
+        def on_text(t: str) -> None:
+            spinner.stop()
+            self.ui.token(t)
+
+        splitter = ThinkSplitter(on_text, on_think)
         try:
             resp = self.llm.chat(self.messages, tools=self.schemas(),
-                                 on_token=on_token, on_think=on_think, think=think)
+                                 on_token=splitter.feed, on_think=on_think, think=think)
+            splitter.flush()
         finally:
             spinner.stop()
             self.ui.end_stream()
+        if "<think>" in (resp.content or ""):         # мысли — на экран, не в историю и не в ответ
+            resp.content = strip_thoughts(resp.content)
         est = estimate_tokens(self.messages)
         if resp.prompt_tokens and est:
             self._ratio = max(0.3, min(3.0, resp.prompt_tokens / est))

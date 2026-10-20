@@ -1,0 +1,56 @@
+#!/bin/sh
+# loca-local — одна команда: поднять llama-server со своей моделью и открыть loca.
+#
+#   loca-local                              # модель: $LOCA_GGUF, ~/Downloads/my-coder-v3-Q4_K_M.gguf или Qwen с HF
+#   loca-local ~/models/my-coder-v3.gguf    # свой файл
+#   loca-local model.gguf --grumpy          # всё после модели уходит в loca
+#   LOCA_CTX=4096 loca-local                # меньше контекст — меньше памяти (8 ГБ: 4096–8192)
+#
+# Свободный порт выбирается сам (8080, 8081, …); сервер живёт, пока открыт loca, и гасится при выходе.
+# Лог сервера: ~/.loca/llama-server.log. Мысли модели показываются серым (💭) — флаг --think-aloud.
+set -e
+SELF="$0"
+while [ -L "$SELF" ]; do                          # ~/.local/bin/loca-local может быть ссылкой
+  LINK=$(readlink "$SELF"); case "$LINK" in /*) SELF="$LINK" ;; *) SELF="$(dirname "$SELF")/$LINK" ;; esac
+done
+REPO="${LOCA_REPO:-$(cd "$(dirname "$SELF")/.." && pwd)}"
+
+c() { printf '\033[%sm%s\033[0m' "$1" "$2"; }
+MODEL="${LOCA_GGUF:-}"
+case "${1:-}" in *.gguf|*/*|*:*) MODEL="$1"; shift ;; esac
+if [ -z "$MODEL" ]; then
+  for f in "$HOME/Downloads/my-coder-v3-Q4_K_M.gguf" "$HOME/Downloads/my-coder-v2-Q4_K_M.gguf"; do
+    [ -f "$f" ] && MODEL="$f" && break
+  done
+fi
+MODEL="${MODEL:-bartowski/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M}"
+CTX="${LOCA_CTX:-8192}"
+command -v llama-server >/dev/null || { echo "Нет llama-server: brew install llama.cpp"; exit 1; }
+
+PORT="${LOCA_PORT:-8080}"
+while lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; do PORT=$((PORT + 1)); done
+mkdir -p "$HOME/.loca"
+LOG="$HOME/.loca/llama-server.log"
+if [ -f "$MODEL" ]; then SRC="-m $MODEL"; else SRC="-hf $MODEL"; fi
+
+printf '\n  %s  %s\n' "$(c '1;36' 'loca-local')" "$(c 2 "$(basename "$MODEL") · контекст $CTX · порт $PORT")"
+# shellcheck disable=SC2086
+llama-server $SRC --jinja -c "$CTX" -np 1 -fa on -ctk q8_0 -ctv q8_0 -ngl 99 \
+  --reasoning-format deepseek --host 127.0.0.1 --port "$PORT" >"$LOG" 2>&1 &
+SERVER=$!
+trap 'kill $SERVER 2>/dev/null; wait $SERVER 2>/dev/null' EXIT INT TERM
+
+printf '  %s ' "$(c 2 'загружаю модель')"
+i=0
+until curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; do
+  if ! kill -0 $SERVER 2>/dev/null; then
+    printf '\n  %s\n' "$(c 31 'llama-server упал — последние строки лога:')"; tail -n 15 "$LOG"; exit 1
+  fi
+  i=$((i + 1)); [ $((i % 2)) -eq 0 ] && printf '%s' "$(c 2 '·')"
+  [ $i -gt 600 ] && { printf '\n  %s\n' "$(c 31 'не дождался сервера за 5 минут, лог:') $LOG"; exit 1; }
+  sleep 0.5
+done
+printf ' %s\n\n' "$(c 32 'готово')"
+
+PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}" "${LOCA_PYTHON:-python3}" -m loca \
+  --backend llamacpp --host "http://127.0.0.1:$PORT" --think-aloud "$@"
