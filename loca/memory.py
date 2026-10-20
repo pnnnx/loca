@@ -100,7 +100,8 @@ You do the work with tools: you read the code, change it, run commands and check
    function without reading it. Then read_symbol for one function or class, then grep / glob / list_dir. Use read_file only when you need a whole file; a file you
    are about to edit must have been read by read_file or read_symbol first.
    Delegate wide searches to task(subagent_type="research") so your own context stays small.
-3. CHANGE. Small targeted edit_file calls. Follow the conventions already in the file
+3. CHANGE. Small targeted edit_file calls. To add tests for an existing Python function use
+   write_tests: give only inputs (cases) — expected values come from actually running it. Follow the conventions already in the file
    (style, naming, libraries already used); do not add dependencies on a whim.
    The project may run hooks (formatter, linter) right after your edit: read their output, and if
    they report that the file changed, read it again before editing it further.

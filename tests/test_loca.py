@@ -2022,3 +2022,81 @@ def test_style_preset_and_persist(tmp_path, monkeypatch):
     assert json.loads(path.read_text())["style"] == "teen"
     config.save_user_setting("style", "off")
     assert "style" not in json.loads(path.read_text())
+
+
+# ---------------------------------------------------------------- write_tests
+def _tg_project(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "__init__.py").write_text("")
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "shop" / "__init__.py").write_text("")
+    (tmp_path / "shop" / "calc.py").write_text(
+        '"""Расчёты."""\n\n\n'
+        "def avg(xs):\n    return sum(xs) / len(xs)\n\n\n"
+        "def clamp(x, lo=0, hi=10):\n    if x < lo:\n        return lo\n    if x > hi:\n        return hi\n    return x\n\n\n"
+        "class Oops(ValueError):\n    pass\n\n\n"
+        "def parse_age(s):\n    n = int(s)\n    if n < 0:\n        raise Oops('negative')\n    return n\n")
+    return make_ctx(tmp_path)
+
+
+def test_write_tests_values_come_from_running(tmp_path):
+    import subprocess
+    from loca.tools.testgen import WriteTests
+    ctx = _tg_project(tmp_path)
+    before = (tmp_path / "shop" / "calc.py").read_text()
+    out = WriteTests().run({"target": "shop/calc.py:avg", "cases": ["[1, 2, 3]", "[2.5]", "[]"]}, ctx)
+    test_file = tmp_path / "tests" / "test_calc.py"
+    code = test_file.read_text()
+    assert "avg([1, 2, 3]) → 2.0" in out and "исключение ZeroDivisionError" in out
+    assert "ZeroDivisionError" in code and "write_tests" in code
+    assert "падает с ZeroDivisionError — это задумано?" in out          # подозрительное — спрашиваем
+    assert "Тесты проходят" in out and "Мутационная проверка" in out
+    assert (tmp_path / "shop" / "calc.py").read_text() == before        # после мутаций файл как был
+    r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", str(test_file)],
+                       cwd=tmp_path, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_write_tests_mutations_find_weak_cases(tmp_path):
+    from loca.tools.testgen import WriteTests
+    ctx = _tg_project(tmp_path)
+    weak = WriteTests().run({"target": "shop/calc.py:clamp", "cases": ["5"]}, ctx)
+    assert "✗ не поймано" in weak                                      # один случай — порчи проходят
+    strong = WriteTests().run({"target": "shop/calc.py:clamp",
+                               "cases": ["5", "-1", "11", "0", "10", "3, lo=4, hi=6", "7, lo=0, hi=7"]}, ctx)
+    import re
+    k, n = map(int, re.search(r"поймали (\d+) из (\d+)", strong).groups())
+    k0, n0 = map(int, re.search(r"поймали (\d+) из (\d+)", weak).groups())
+    assert k > k0
+    # не пойманы только «эквивалентные» порчи: на границе x == lo обе ветки дают lo
+    left = re.findall(r"✗ не поймано: строка \d+: (.*?) —", strong)
+    assert set(left) <= {"`<` → `<=`", "`>` → `>=`"}, left
+
+
+def test_write_tests_custom_exception_and_refusals(tmp_path):
+    from loca.tools.base import ToolError
+    from loca.tools.testgen import WriteTests
+    ctx = _tg_project(tmp_path)
+    out = WriteTests().run({"target": "shop.calc.parse_age", "cases": ["'42'", "'-3'", "'x'"]}, ctx)
+    code = (tmp_path / "tests" / "test_calc.py").read_text()
+    assert "Oops" in code and "ValueError" in code and "Тесты проходят" in out
+    (tmp_path / "script.py").write_text("def f(x):\n    return x\n\nprint(input())\n")
+    with pytest.raises(ToolError, match="выполняется при импорте"):
+        WriteTests().run({"target": "script.py:f", "cases": ["1"]}, ctx)
+    (tmp_path / "danger.py").write_text("import os\n\ndef wipe(p):\n    os.remove(p)\n")
+    with pytest.raises(ToolError, match="сам не запускаю"):
+        WriteTests().run({"target": "danger.py:wipe", "cases": ["'a'"]}, ctx)
+
+
+def test_write_tests_unittest_flavour(tmp_path, monkeypatch):
+    import subprocess
+    import loca.tools.testgen as tg
+    ctx = _tg_project(tmp_path)
+    monkeypatch.setattr(tg, "_framework", lambda ctx: "unittest")
+    out = tg.WriteTests().run({"target": "shop/calc.py:avg", "cases": ["[1, 2]", "[]", "[0.1, 0.2]"]}, ctx)
+    code = (tmp_path / "tests" / "test_calc.py").read_text()
+    assert "class TestAvg(unittest.TestCase)" in code and "assertAlmostEqual" in code and "assertRaises" in code
+    assert "Тесты проходят" in out
+    r = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-t", ".", "-q"],
+                       cwd=tmp_path, capture_output=True, text=True)
+    assert r.returncode == 0 and "Ran 3 tests" in r.stderr, r.stderr
