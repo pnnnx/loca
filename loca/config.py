@@ -59,6 +59,7 @@ DEFAULTS = {
     # Только в диалоге: в -p (и в бенчмарке) подтверждать некому.
     "spec": "auto",
     "verify_first": True,
+    "style": "",                 # стиль ответов: "teen" или свой текст (/style)
     "think_aloud": False,        # «думать вслух»: короткая мысль серым перед каждым шагом (--think-aloud)
     "grumpy": False,             # режим «ворчун» (/grumpy): реакции с матом — для дообученной модели        # вопросы «что выведет / почему падает» — сначала запустить код
 }
@@ -99,6 +100,19 @@ def load_config(cwd: Path, overrides: dict | None = None) -> dict:
                 unique.append(rule)
         cfg[key] = unique
     return cfg
+
+
+def save_user_setting(key: str, value) -> Path:
+    """Запомнить настройку в ~/.loca/config.json (остальные ключи не трогаем)."""
+    path = HOME_DIR / "config.json"
+    data = _load(path)
+    if value in (None, "", "off"):
+        data.pop(key, None)
+    else:
+        data[key] = value
+    HOME_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
 
 
 def ensure_home() -> None:

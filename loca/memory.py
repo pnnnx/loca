@@ -177,6 +177,22 @@ THINK_ALOUD_PROMPT = (
     "sentences: what you understood, what you will do next and why. Then act (call a tool or answer). "
     "Never put code or the final answer inside <think>.")
 
+# Стиль ответов (/style, --style, "style" в ~/.loca/config.json): пресет по имени или свой текст.
+STYLES = {
+    "teen": ("# Стиль\nПиши всегда с маленькой буквы (кроме кода, имён файлов и терминов из кода), "
+             "неформально, как подросток-программист: короткие фразы, живой сленг в меру (норм, жиза, "
+             "кринж, имба, изи, го), без официоза и канцелярита. Точность как обычно: механизмы называй "
+             "правильно, код и вывод не искажай."),
+}
+
+
+def style_prompt(style: str) -> str:
+    style = (style or "").strip()
+    if not style or style == "off":
+        return ""
+    return STYLES.get(style) or f"# Стиль\n{style}"
+
+
 COMPACT_PROMPT = """Summarize the conversation so far so work can continue with no other context.
 Include: the user's goals and requests; decisions made; files read or changed (paths) and what changed;
 commands run and important results/errors; test results; current state of the plan; what remains
@@ -207,6 +223,8 @@ def system_prompt(cwd: Path, cfg: dict, mode: str, sub: bool = False,
         text += "\n# Project instructions (follow them)\n" + memory + "\n"
     if vars_summary:
         text += "\n# Saved variables (insert with {{name}})\n" + vars_summary + "\n"
+    if style_prompt(cfg.get("style", "")):
+        text += "\n" + style_prompt(cfg.get("style", "")) + "\n"
     if cfg.get("think_aloud"):
         text += "\n" + THINK_ALOUD_PROMPT + "\n"
     if cfg.get("grumpy"):

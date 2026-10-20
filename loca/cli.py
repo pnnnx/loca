@@ -38,6 +38,7 @@ HELP = """\
   /spec [auto|always|off]  задание с подтверждением перед работой (по умолчанию auto)
   /grumpy [on|off]      режим «ворчун»: реакции с матом (для дообученной модели)
   /think-aloud [on|off] показывать короткие мысли модели перед каждым шагом
+  /style [teen|off|текст]  стиль ответов (запоминается): teen — с маленькой буквы, по-подростковому
   /plan-show            текущий граф подзадач (то же — /todos)
   /undo                 откатить последнюю правку файла
   /hooks                какие хуки настроены
@@ -93,6 +94,8 @@ class App:
             overrides["grumpy"] = True
         if getattr(args, "think_aloud", False):
             overrides["think_aloud"] = True
+        if getattr(args, "style", None):
+            overrides["style"] = args.style
         self.cfg = load_config(self.cwd, overrides)
         self.headless = bool(args.print)
         self.ui = UI()
@@ -186,6 +189,11 @@ class App:
             self.ui.warn(f"Сессия не сохранена: {e}")
 
     def banner(self) -> None:
+        if getattr(self.llm, "backend", "ollama") == "llamacpp":
+            try:
+                self.llm.sync()                # имя модели и контекст — с сервера, до первой строки
+            except LLMError:
+                pass
         mem = find_memory_files(self.cwd, self.cfg["memory_files"])
         print(f"{bold(cyan('loca'))} {dim('v' + __version__)} · модель {bold(self.llm.model)} · "
               f"ctx {self.llm.num_ctx} · режим {bold(self.permissions.mode)}")
@@ -199,8 +207,10 @@ class App:
         print(dim("/help — команды, #заметка — в память, Ctrl+D — выход"))
         try:
             if getattr(self.llm, "backend", "ollama") == "llamacpp":
-                self.llm.sync()
-                print(dim(f"llama.cpp: {self.llm.host} · модель {self.llm.model} · контекст {self.llm.num_ctx}"))
+                extras = [x for x, on in (("мысли вслух", self.cfg.get("think_aloud")),
+                                          (f"стиль: {self.cfg.get('style')}", self.cfg.get("style")),
+                                          ("ворчун", self.cfg.get("grumpy"))) if on]
+                print(dim(f"llama.cpp: {self.llm.host}" + (" · " + " · ".join(extras) if extras else "")))
             else:
                 models = self.llm.list_models()
                 if not any(m == self.llm.model or m.split(":")[0] == self.llm.model for m in models):
@@ -240,6 +250,17 @@ class App:
                 self.cfg["spec"] = "always" if rest == "on" else rest
             self.ui.info(f"Задание перед работой: {self.cfg.get('spec', 'auto')} "
                          "(/spec auto | always | off)")
+        elif name == "style":
+            from .config import save_user_setting
+            from .memory import STYLES
+            if rest:
+                self.cfg["style"] = "" if rest == "off" else rest
+                where = save_user_setting("style", self.cfg["style"])
+                self.agent.refresh_system()
+                self.ui.info(f"Стиль: {self.cfg['style'] or 'обычный'} (запомнил в {where})")
+            else:
+                self.ui.info(f"Стиль: {self.cfg.get('style') or 'обычный'}. Варианты: /style "
+                             + " | /style ".join(STYLES) + " | /style свой текст | /style off")
         elif name in ("think-aloud", "thoughts"):
             self.cfg["think_aloud"] = (rest == "on") if rest in ("on", "off") else not self.cfg.get("think_aloud")
             self.agent.refresh_system()
@@ -429,6 +450,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--yolo", action="store_true", help="не спрашивать разрешений (кроме опасных команд)")
     p.add_argument("--think", action="store_true", help="включить размышления модели")
     p.add_argument("--grumpy", action="store_true", help="режим «ворчун» (реакции с матом)")
+    p.add_argument("--style", help="стиль ответов: teen или свой текст")
     p.add_argument("--think-aloud", action="store_true", dest="think_aloud",
                    help="показывать мысли модели (для моделей без режима размышлений)")
     p.add_argument("-c", "--continue", dest="continue_", action="store_true", help="продолжить последнюю сессию")

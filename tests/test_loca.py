@@ -2007,3 +2007,18 @@ def test_think_aloud_thoughts_shown_but_not_kept(tmp_path, capsys):
     assert "Вопрос простой" in out and "Ответ: 42" in out
     sys_msg = fake.requests[0]["messages"][0]["content"]
     assert "<think>" in sys_msg
+
+
+def test_style_preset_and_persist(tmp_path, monkeypatch):
+    import json
+    import loca.config as config
+    from loca.memory import STYLES, style_prompt, system_prompt
+    monkeypatch.setattr(config, "HOME_DIR", tmp_path / "home")
+    assert style_prompt("teen") == STYLES["teen"] and style_prompt("off") == "" and style_prompt("") == ""
+    assert style_prompt("пиши стихами") == "# Стиль\nпиши стихами"
+    text = system_prompt(tmp_path, dict(config.DEFAULTS, style="teen"), "default")
+    assert "с маленькой буквы" in text
+    path = config.save_user_setting("style", "teen")
+    assert json.loads(path.read_text())["style"] == "teen"
+    config.save_user_setting("style", "off")
+    assert "style" not in json.loads(path.read_text())

@@ -280,7 +280,7 @@ class LlamaCppClient:
             self.num_ctx = n_ctx
             self._cfg["num_ctx"] = n_ctx
         path = props.get("model_path") or settings.get("model") or ""
-        if path and self.model in ("local", "", None):
+        if path:                               # имя из конфига (Ollama) тут ни при чём — берём с сервера
             self.model = path.rsplit("/", 1)[-1]
 
     def list_models(self) -> list[str]:
