@@ -2197,3 +2197,10 @@ def test_record_writes_full_trace_with_tools_and_fallbacks(tmp_path):
     assert calls[0]["tool_calls"][0]["function"]["name"] == "read_file"
     assert any(m["role"] == "tool" and "print(2 + 2)" in m["content"] for m in d["messages"])
     assert d["fallbacks"] == {"autorun": 0, "autolist": 0, "files_nudge": 0, "files_saved": 0}
+
+
+def test_plan_saves_uses_path_from_request_and_keeps_stdin_program():
+    from loca.savecode import plan_saves
+    ans = "Решение:\n\n```python\na, b = map(int, input().split())\nprint(a + b)\n```\n"
+    (path, code), = plan_saves(ans, "Реши задачу. Напиши решение в `solution.py`.")
+    assert path == "solution.py" and code.rstrip().endswith("print(a + b)")   # print — это ответ, не демо

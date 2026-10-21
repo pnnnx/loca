@@ -54,7 +54,8 @@ def spec_files(text: str) -> list[str]:
     for line in (text or "").splitlines():
         if line.strip().lower().startswith("файлы:"):
             return list(dict.fromkeys(_PATH_RE.findall(line)))
-    return []
+    # без задания — пути, названные прямо в просьбе («напиши решение в `solution.py`»)
+    return list(dict.fromkeys(_PATH_RE.findall(text or "")))
 
 
 def code_blocks(answer: str) -> list[tuple[str, str]]:
@@ -76,9 +77,14 @@ def _defs(code: str) -> list[str]:
 
 
 def _strip_demo(code: str) -> str:
-    """Демонстрационные print(...) после определений — в модуль не кладём (при импорте из тестов шумят)."""
+    """Демонстрационные print(f(...)) после определений — в модуль не кладём (при импорте из тестов шумят).
+    Программу без функций (читает stdin, печатает ответ) не трогаем: там print — это и есть ответ."""
+    names = _defs(code)
+    if not names:
+        return code
+    demo = re.compile(r"^(#.*|print\(.*\b(" + "|".join(map(re.escape, names)) + r")\b.*)$")
     lines = code.rstrip("\n").splitlines()
-    while lines and re.match(r"^(print\(|#)", lines[-1].strip()) and not lines[-1].startswith((" ", "\t")):
+    while lines and not lines[-1].startswith((" ", "\t")) and (demo.match(lines[-1].strip()) or not lines[-1].strip()):
         lines.pop()
     while lines and not lines[-1].strip():
         lines.pop()
