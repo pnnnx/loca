@@ -2179,3 +2179,21 @@ def test_listing_question_gets_real_listing(tmp_path):
     msgs = fake.requests[0]["messages"]
     assert any(m["role"] == "tool" and "real.py" in m["content"] for m in msgs)
     assert any("never invent files" in m["content"] for m in msgs if m["role"] == "user")
+
+
+def test_record_writes_full_trace_with_tools_and_fallbacks(tmp_path):
+    import json
+    (tmp_path / "a.py").write_text("print(2 + 2)\n")
+    rec = tmp_path / "rec.json"
+    fake = FakeOllama([{"tool_calls": [("read_file", {"path": "a.py"})]}, {"content": "Выведет 4."}])
+    from loca.cli import main
+    main(["-p", "--yolo", "--host", fake.url, "-m", "fake:1b", "--cwd", str(tmp_path),
+          "--record", str(rec), "прочитай a.py"])
+    fake.close()
+    d = json.loads(rec.read_text())
+    assert d["prompt"] == "прочитай a.py" and d["messages"][0]["role"] == "system"
+    assert any(t["function"]["name"] == "write_file" for t in d["tools"])
+    calls = [m for m in d["messages"] if m.get("tool_calls")]
+    assert calls[0]["tool_calls"][0]["function"]["name"] == "read_file"
+    assert any(m["role"] == "tool" and "print(2 + 2)" in m["content"] for m in d["messages"])
+    assert d["fallbacks"] == {"autorun": 0, "autolist": 0, "files_nudge": 0, "files_saved": 0}

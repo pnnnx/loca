@@ -238,6 +238,8 @@ class Agent:
         self.messages: list[dict] = [{"role": "system", "content": self._system()}]
 
     # ------------------------------------------------------------------ setup
+    fallbacks: dict = {}
+
     def _system(self) -> str:
         return system_prompt(self.ctx.cwd, self.ctx.cfg, self.ctx.permissions.mode, sub=self.sub,
                              vars_summary=self.ctx.vars.summary(), subagent_kind=self.sub_kind)
@@ -407,6 +409,7 @@ class Agent:
         nudged_gate = False
         nudged_files = False
         code_answer = ""
+        self.fallbacks = {"autorun": 0, "autolist": 0, "files_nudge": 0, "files_saved": 0}
         self.ctx.edited = False
         self.ctx.tests_run = 0
         self.ctx.touched = set()
@@ -429,9 +432,12 @@ class Agent:
                 and needs_verification(user_text)):
             if not self._autorun(user_text):
                 self.messages.append({"role": "user", "content": VERIFY_TEXT})
+            else:
+                self.fallbacks["autorun"] += 1
         # «в какой папке файлы?» — настоящий листинг до ответа (7B выдумывает его, не вызвав list_dir)
         elif not self.sub and "list_dir" in self.tools and savecode.asks_listing(user_text):
             self._autolist()
+            self.fallbacks["autolist"] += 1
         for step in range(1, self.max_steps + 1):
             if self.ctx.deadline and time.time() > self.ctx.deadline:
                 self.ctx.budget_hit = True
@@ -477,12 +483,14 @@ class Agent:
                         and savecode.wants_files(user_text)):
                     if not nudged_files:
                         nudged_files = True
+                        self.fallbacks["files_nudge"] += 1
                         files = savecode.spec_files(user_text)
                         self.messages.append({"role": "user", "content": savecode.NUDGE_TEXT.format(
                             files=f" ({', '.join(files)})" if files else "")})
                         continue
                     note = self._save_blocks(code_answer, user_text)
                     if note:
+                        self.fallbacks["files_saved"] += 1
                         return (final + "\n\n" + note).strip()
                 reminder = self._closing_reminder(nudged_tests, nudged_plan)
                 if reminder:

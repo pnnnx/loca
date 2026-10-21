@@ -166,6 +166,20 @@ class App:
         except OSError as e:
             self.ui.warn(f"Статистика не записана: {e}")
 
+    def write_record(self, path: str, prompt: str) -> None:
+        """Трасса для обучения: схемы инструментов + вся переписка + где loca вмешивалась сама."""
+        u = self.agent.usage
+        data = {"model": self.llm.model, "prompt": prompt, "tools": self.agent.schemas(),
+                "messages": self.agent.messages, "fallbacks": dict(self.agent.fallbacks),
+                "steps": u.steps, "tokens_out": u.total_out, "model_seconds": round(u.seconds, 2),
+                "tool_errors": self.agent.tool_errors, "tools_used": dict(self.agent.tool_counts),
+                "edited": self.ctx.edited, "tests_run": self.ctx.tests_run, "tests_passed": self.ctx.tests_passed,
+                "budget_hit": self.ctx.budget_hit}
+        try:
+            Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+        except OSError as e:
+            self.ui.warn(f"Трасса не записана: {e}")
+
     def resume(self, session_id: str) -> None:
         try:
             self.session, messages, plan, variables = Session.load(session_id)
@@ -457,6 +471,7 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("-r", "--resume", metavar="ID")
     p.add_argument("--cwd")
     p.add_argument("--stats", metavar="FILE", help="записать метрики прогона в JSON (для бенчмарка)")
+    p.add_argument("--record", metavar="FILE", help="записать всю переписку с инструментами в JSON (сбор датасета)")
     p.add_argument("--max-seconds", type=int, dest="max_seconds",
                    help="лимит времени на один ход: агент остановится сам, а не будет убит")
     p.add_argument("-V", "--version", action="version", version=f"loca {__version__}")
@@ -483,6 +498,8 @@ def main(argv: list[str] | None = None) -> None:
         finally:
             if args.stats:
                 app.write_stats(args.stats)
+            if args.record:
+                app.write_record(args.record, prompt)
             if app.mcp:
                 app.mcp.stop()
         return
