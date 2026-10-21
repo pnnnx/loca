@@ -769,7 +769,7 @@ def test_stats_file(tmp_path):
     fake.close()
     data = json.loads(stats.read_text(encoding="utf-8"))
     assert data["model"] == "fake:1b" and data["requests"] == 3 and data["steps"] == 3
-    assert data["tools"] == {"glob": 1, "set_var": 1}
+    assert data["tools"] == {"glob": 1, "set_var": 1, "list_dir": 1}   # «какие файлы» → настоящий листинг
     assert data["tokens_in"] > 0 and data["vars"] == ["f"] and data["edited"] is False
 
 
@@ -2100,3 +2100,82 @@ def test_write_tests_unittest_flavour(tmp_path, monkeypatch):
     r = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-t", ".", "-q"],
                        cwd=tmp_path, capture_output=True, text=True)
     assert r.returncode == 0 and "Ran 3 tests" in r.stderr, r.stderr
+
+
+# ---------------------------------------------------------------- код в чате без файлов (my-coder v4)
+_V4_ANSWER = ("Сначала исследуем бинарный поиск.\n\n```python\ndef binary_search(arr, x):\n"
+              "    left, right = 0, len(arr) - 1\n    while left <= right:\n        mid = (left + right) // 2\n"
+              "        if arr[mid] == x:\n            return mid\n        elif arr[mid] < x:\n"
+              "            left = mid + 1\n        else:\n            right = mid - 1\n    return -1\n\n"
+              "print(binary_search([0, 5, 7, 9, 10], 7))   # 2\n```\n\nТеперь тесты.\n\n```python\n"
+              "import pytest\n\ndef test_empty():\n    assert binary_search([], 3) == -1\n\n"
+              "def test_found():\n    assert binary_search(list(range(1000)), 500) == 500\n```\n")
+
+
+def test_plan_saves_maps_blocks_to_files_and_imports():
+    from loca.savecode import asks_listing, plan_saves, wants_files
+    req = "напиши код бинарного поиска и тесты\nФайлы: (новый) test/test_binary.py (нет в проекте)"
+    saves = dict(plan_saves(_V4_ANSWER, req))
+    assert set(saves) == {"binary_search.py", "test/test_binary.py"}
+    assert "print(" not in saves["binary_search.py"]                         # демо-вывод не в модуль
+    assert "from binary_search import binary_search" in saves["test/test_binary.py"]
+    assert "parents[1]" in saves["test/test_binary.py"]                       # тест в подпапке видит модуль
+    assert wants_files("напиши код бинарного поиска на пайтон и тесты к нему")
+    assert not wants_files("объясни, как работает бинарный поиск")
+    assert asks_listing("а в какой директории файлы") and not asks_listing("объясни list comprehension")
+
+
+def test_code_in_chat_gets_saved_after_one_nudge(tmp_path):
+    # так отвечает my-coder v4: код в чате, write_file не вызван; на напоминание — снова текст
+    fake = FakeOllama([{"content": _V4_ANSWER}, {"content": "Файлы созданы, всё готово."}])
+    from loca.cli import main
+    main(["-p", "--yolo", "--host", fake.url, "-m", "fake:1b", "--cwd", str(tmp_path),
+          "напиши код бинарного поиска на пайтон и тесты к нему"])
+    fake.close()
+    assert len(fake.requests) == 2
+    assert any("did NOT create any files" in m["content"] for m in fake.requests[1]["messages"] if m["role"] == "user")
+    assert (tmp_path / "binary_search.py").exists() and (tmp_path / "test_binary_search.py").exists()
+    import subprocess, sys
+    r = subprocess.run([sys.executable, "-m", "pytest", "-q", "test_binary_search.py"], cwd=tmp_path,
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_nudge_is_enough_when_model_obeys(tmp_path):
+    fake = FakeOllama([{"content": _V4_ANSWER},
+                       {"tool_calls": [("write_file", {"path": "bs.py",
+                                                       "content": "def binary_search(a, x):\n    return -1\n"})]},
+                       {"content": "Готово."}])
+    from loca.cli import main
+    main(["-p", "--yolo", "--host", fake.url, "-m", "fake:1b", "--cwd", str(tmp_path),
+          "напиши функцию binary_search"])
+    fake.close()
+    assert (tmp_path / "bs.py").exists() and not (tmp_path / "binary_search.py").exists()
+
+
+def test_existing_files_are_not_overwritten_and_explain_is_untouched(tmp_path):
+    (tmp_path / "binary_search.py").write_text("# мой файл\n")
+    fake = FakeOllama([{"content": _V4_ANSWER}, {"content": "ок"}])
+    from loca.cli import main
+    main(["-p", "--yolo", "--host", fake.url, "-m", "fake:1b", "--cwd", str(tmp_path),
+          "напиши код бинарного поиска и тесты"])
+    fake.close()
+    assert (tmp_path / "binary_search.py").read_text() == "# мой файл\n"
+    (tmp_path / "x").mkdir()
+    fake = FakeOllama([{"content": _V4_ANSWER}])
+    main(["-p", "--yolo", "--host", fake.url, "-m", "fake:1b", "--cwd", str(tmp_path / "x"),
+          "объясни бинарный поиск"])
+    fake.close()
+    assert len(fake.requests) == 1 and not list((tmp_path / "x").iterdir())   # объяснение — без напоминаний и файлов
+
+
+def test_listing_question_gets_real_listing(tmp_path):
+    (tmp_path / "real.py").write_text("x = 1\n")
+    fake = FakeOllama([{"content": "В папке: real.py"}])
+    from loca.cli import main
+    main(["-p", "--yolo", "--host", fake.url, "-m", "fake:1b", "--cwd", str(tmp_path),
+          "а в какой директории файлы?"])
+    fake.close()
+    msgs = fake.requests[0]["messages"]
+    assert any(m["role"] == "tool" and "real.py" in m["content"] for m in msgs)
+    assert any("never invent files" in m["content"] for m in msgs if m["role"] == "user")

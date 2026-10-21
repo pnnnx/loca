@@ -5,8 +5,9 @@ import json
 import re
 import time
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 
-from . import hooks
+from . import hooks, savecode
 from .llm import LLMError, LLMResponse, OllamaClient, ToolCall  # noqa: F401
 from .memory import COMPACT_PROMPT, system_prompt
 from .tools import Tool, ToolContext, ToolError, subagent_tools, truncate
@@ -404,6 +405,8 @@ class Agent:
         nudged_plan = False
         nudged_stop = False
         nudged_gate = False
+        nudged_files = False
+        code_answer = ""
         self.ctx.edited = False
         self.ctx.tests_run = 0
         self.ctx.touched = set()
@@ -426,6 +429,9 @@ class Agent:
                 and needs_verification(user_text)):
             if not self._autorun(user_text):
                 self.messages.append({"role": "user", "content": VERIFY_TEXT})
+        # «в какой папке файлы?» — настоящий листинг до ответа (7B выдумывает его, не вызвав list_dir)
+        elif not self.sub and "list_dir" in self.tools and savecode.asks_listing(user_text):
+            self._autolist()
         for step in range(1, self.max_steps + 1):
             if self.ctx.deadline and time.time() > self.ctx.deadline:
                 self.ctx.budget_hit = True
@@ -457,6 +463,8 @@ class Agent:
             self.messages.append(msg)
             if resp.content.strip():
                 final = resp.content
+                if savecode.code_blocks(resp.content):
+                    code_answer = resp.content
 
             if not resp.tool_calls:
                 if not resp.content.strip() and not nudged:
@@ -464,6 +472,18 @@ class Agent:
                     self.messages.append({"role": "user", "content":
                                           "Continue: call a tool or give your final answer."})
                     continue
+                # код показан в чате, а файлов нет: сначала одно напоминание, потом сохраняем сами
+                if (not self.sub and not self.ctx.edited and "write_file" in self.tools and code_answer
+                        and savecode.wants_files(user_text)):
+                    if not nudged_files:
+                        nudged_files = True
+                        files = savecode.spec_files(user_text)
+                        self.messages.append({"role": "user", "content": savecode.NUDGE_TEXT.format(
+                            files=f" ({', '.join(files)})" if files else "")})
+                        continue
+                    note = self._save_blocks(code_answer, user_text)
+                    if note:
+                        return (final + "\n\n" + note).strip()
                 reminder = self._closing_reminder(nudged_tests, nudged_plan)
                 if reminder:
                     if reminder[0] == "tests":
@@ -553,6 +573,50 @@ class Agent:
         if ran:
             self.messages.append({"role": "user", "content": AUTORUN_TEXT})
         return ran
+
+    def _autolist(self) -> None:
+        call = ToolCall("list_dir", {"path": "."})
+        result = self.execute(call)
+        self.messages.append({"role": "assistant", "content": "",
+                              "tool_calls": [{"function": {"name": "list_dir", "arguments": call.arguments}}]})
+        self.messages.append({"role": "tool", "tool_name": "list_dir", "content": result})
+        self.messages.append({"role": "user", "content": savecode.LIST_TEXT})
+
+    def _save_blocks(self, answer: str, request: str) -> str:
+        """Модель так и не вызвала write_file: раскладываем блоки кода по файлам сами (обычным
+        write_file — с правами и снимком для /undo), чужие файлы не трогаем, тесты запускаем."""
+        saves = savecode.plan_saves(answer, request)
+        if not saves:
+            return ""
+        self.ui.info("модель показала код, но не создала файлы — сохраняю сам: "
+                     + ", ".join(p for p, _ in saves))
+        written, skipped = [], []
+        for path, content in saves:
+            if (self.ctx.cwd / path).exists():
+                skipped.append(path)
+                continue
+            call = ToolCall("write_file", {"path": path, "content": content})
+            result = self.execute(call)
+            self.messages.append({"role": "assistant", "content": "",
+                                  "tool_calls": [{"function": {"name": "write_file", "arguments": call.arguments}}]})
+            self.messages.append({"role": "tool", "tool_name": "write_file", "content": result})
+            if not result.startswith(("Error:", "Denied")):
+                written.append(path)
+        lines = []
+        if written:
+            lines.append("Сохранено: " + ", ".join(f"`{p}`" for p in written) + ".")
+        if skipped:
+            lines.append("Не трогал (файлы уже есть): " + ", ".join(f"`{p}`" for p in skipped) + ".")
+        tests = [p for p in written if PurePosixPath(p).name.startswith("test")]
+        if tests and "run_tests" in self.tools:
+            call = ToolCall("run_tests", {"target": tests[0]})
+            result = self.execute(call)
+            self.messages.append({"role": "assistant", "content": "",
+                                  "tool_calls": [{"function": {"name": "run_tests", "arguments": call.arguments}}]})
+            self.messages.append({"role": "tool", "tool_name": "run_tests", "content": result})
+            first = next((l for l in result.splitlines() if l.strip()), "")
+            lines.append(f"Тесты `{tests[0]}`: {first[:160]}")
+        return "\n".join(lines)
 
     def _maybe_remind(self, step: int) -> None:
         """Periodically re-state the plan, the way Claude Code re-injects its plan."""
