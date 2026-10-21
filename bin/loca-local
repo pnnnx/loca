@@ -1,8 +1,8 @@
 #!/bin/sh
 # loca-local — одна команда: поднять llama-server со своей моделью и открыть loca.
 #
-#   loca-local                              # модель: $LOCA_GGUF, ~/Downloads/my-coder-v3-Q4_K_M.gguf или Qwen с HF
-#   loca-local ~/models/my-coder-v3.gguf    # свой файл
+#   loca-local                              # модель: $LOCA_GGUF, ~/models/my-coder-v*-Q4_K_M.gguf (новейшая) или Qwen с HF
+#   loca-local ~/models/my-coder-v4.gguf    # свой файл
 #   loca-local model.gguf --grumpy          # всё после модели уходит в loca
 #   LOCA_CTX=4096 loca-local                # меньше контекст — меньше памяти (8 ГБ: 4096–8192)
 #
@@ -19,8 +19,11 @@ c() { printf '\033[%sm%s\033[0m' "$1" "$2"; }
 MODEL="${LOCA_GGUF:-}"
 case "${1:-}" in *.gguf|*/*|*:*) MODEL="$1"; shift ;; esac
 if [ -z "$MODEL" ]; then
-  for f in "$HOME/Downloads/my-coder-v3-Q4_K_M.gguf" "$HOME/Downloads/my-coder-v2-Q4_K_M.gguf"; do
-    [ -f "$f" ] && MODEL="$f" && break
+  for v in 9 8 7 6 5 4 3 2; do                       # самая новая версия; сначала ~/models, потом Загрузки
+    for d in "$HOME/models" "$HOME/Downloads"; do
+      f="$d/my-coder-v$v-Q4_K_M.gguf"
+      [ -f "$f" ] && MODEL="$f" && break 2
+    done
   done
 fi
 MODEL="${MODEL:-bartowski/Qwen2.5-Coder-7B-Instruct-GGUF:Q4_K_M}"
