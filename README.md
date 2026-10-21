@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/assets/banner_loca.png" alt="loca — a local coding agent for small models, with Lo the mascot" width="100%"></p>
+
 # loca — локальный агент для кода в терминале
 
 Аналог Claude Code, который работает с локальной моделью через Ollama. Написан на чистом Python, без
