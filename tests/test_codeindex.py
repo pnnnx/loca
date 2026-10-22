@@ -145,3 +145,41 @@ def test_impact(project):
     from loca.tools.base import ToolError
     with pytest.raises(ToolError):
         Impact().run({"files": ["README.md"]}, make_ctx(project))
+
+
+def _git(root, *cmd):
+    import subprocess
+    return subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *cmd], cwd=root,
+                          check=True, capture_output=True, text=True).stdout
+
+
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="нужен git")
+def test_changed_files_relative_to_subdir(tmp_path):
+    """T-22: из подпапки пути от cwd, а не от корня репозитория (иначе impact без files промахивался)."""
+    from loca.tools.codeindex import _changed_files
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "a.py").write_text("x = 1\n")
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-qm", "base")
+    (tmp_path / "sub" / "a.py").write_text("x = 2\n")
+    (tmp_path / "sub" / "b.py").write_text("y = 1\n")
+    assert sorted(_changed_files(tmp_path / "sub")) == ["a.py", "b.py"]
+
+
+@pytest.mark.skipif(not __import__("shutil").which("git"), reason="нужен git")
+def test_index_cache_hidden_from_git(project):
+    """T-22: .loca/index.json не торчит в git status, а config.json проекта — виден."""
+    from loca.tools.codeindex import CodeIndex
+    _git(project, "init", "-q")
+    (project / ".loca").mkdir()
+    (project / ".loca" / "config.json").write_text("{}")
+    CodeIndex(project).refresh()
+    assert (project / ".loca" / "index.json").is_file()
+    status = _git(project, "status", "--porcelain", "--untracked-files=all")
+    assert ".loca/config.json" in status
+    assert "index.json" not in status and ".loca/.gitignore" not in status
+    gi = project / ".loca" / ".gitignore"
+    gi.write_text("custom\n")                 # чужой .gitignore дополняется, а не затирается
+    CodeIndex(project).refresh()._save()
+    assert gi.read_text().splitlines() == ["custom", "index.json*"]

@@ -309,6 +309,22 @@ def _is_test_file(rel: str) -> bool:
     return name.startswith("test_") or name.endswith("_test.py")
 
 
+def _ignore_in_git(folder: Path, name: str) -> None:
+    """Кэш индекса — не для коммита: строка в .loca/.gitignore (config.json и commands/ остаются в git)."""
+    gi = folder / ".gitignore"
+    line = name + "*"                         # index.json и index.json.tmp
+    try:
+        if not gi.exists():                   # свой файл прячет и себя: в git status пусто
+            gi.write_text(f"{line}\n.gitignore\n", encoding="utf-8")
+            return
+        text = gi.read_text(encoding="utf-8")
+        if line not in text.splitlines():
+            gi.write_text(text + ("" if not text or text.endswith("\n") else "\n") + line + "\n",
+                          encoding="utf-8")
+    except OSError:
+        pass
+
+
 class CodeIndex:
     def __init__(self, root: Path):
         self.root = Path(root).resolve()
@@ -330,6 +346,7 @@ class CodeIndex:
     def _save(self) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            _ignore_in_git(self.path.parent, self.path.name)
             tmp = self.path.with_suffix(".json.tmp")
             tmp.write_text(json.dumps({"version": INDEX_VERSION, "files": self.files},
                                       ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
@@ -641,7 +658,9 @@ def load_index(ctx: ToolContext) -> CodeIndex:
 
 def _changed_files(cwd: Path) -> list[str]:
     out = []
-    for cmd in (["git", "diff", "--name-only", "HEAD"], ["git", "ls-files", "--others", "--exclude-standard"]):
+    # --relative: пути от cwd, как у ls-files; без него из подпапки пути шли бы от корня репозитория
+    for cmd in (["git", "diff", "--name-only", "--relative", "HEAD"],
+                ["git", "ls-files", "--others", "--exclude-standard"]):
         try:
             res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=10)
         except (OSError, subprocess.SubprocessError):

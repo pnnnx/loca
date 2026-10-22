@@ -16,10 +16,8 @@ import builtins
 import copy
 import hashlib
 import json
-import re
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 from .base import Tool, ToolContext, ToolError, obj, truncate
