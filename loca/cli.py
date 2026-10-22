@@ -453,6 +453,11 @@ class App:
 
 
 def main(argv: list[str] | None = None) -> None:
+    argv = sys.argv[1:] if argv is None else argv
+    # loca review [--base ...] — ревью диффа без модели; «loca review этот код» остаётся запросом
+    if argv[:1] == ["review"] and (len(argv) == 1 or argv[1].startswith("-")):
+        from .tools.review import cli_main
+        sys.exit(cli_main(argv[1:]))
     p = argparse.ArgumentParser(prog="loca", description="Локальный агент для кода поверх Ollama")
     p.add_argument("prompt", nargs="*", help="начальный запрос")
     p.add_argument("-p", "--print", action="store_true", help="выполнить запрос и выйти (без диалога)")

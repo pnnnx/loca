@@ -14,9 +14,10 @@ READ_ONLY_TOOLS = [ReadFile, ReadSymbol, RepoMap, ListDir, Glob, Grep]
 
 
 def index_tools(cfg: dict | None) -> list[Tool]:
-    """deps и impact — только с флагом codeindex (бета, A/B в T-20)."""
+    """deps, impact и review_diff — только с флагом codeindex (бета, A/B в T-20)."""
     from .codeindex import Deps, Impact
-    return [Deps(), Impact()] if cfg and cfg.get("codeindex") else []
+    from .review import ReviewDiff
+    return [Deps(), Impact(), ReviewDiff()] if cfg and cfg.get("codeindex") else []
 
 
 def main_tools(cfg: dict | None = None) -> list[Tool]:
