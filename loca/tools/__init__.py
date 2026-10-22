@@ -13,18 +13,24 @@ from .web import WebFetch
 READ_ONLY_TOOLS = [ReadFile, ReadSymbol, RepoMap, ListDir, Glob, Grep]
 
 
-def main_tools() -> list[Tool]:
+def index_tools(cfg: dict | None) -> list[Tool]:
+    """deps и impact — только с флагом codeindex (бета, A/B в T-20)."""
+    from .codeindex import Deps, Impact
+    return [Deps(), Impact()] if cfg and cfg.get("codeindex") else []
+
+
+def main_tools(cfg: dict | None = None) -> list[Tool]:
     return [ReadFile(), ReadSymbol(), RepoMap(), EditFile(), WriteFile(), ListDir(), Glob(),
             Grep(), Bash(), RunTests(), WriteTests(), PlanWrite(), RunPlan(), Task(), ExitPlanMode(),
-            SetVar(), GetVar(), DelVar(), WebFetch()]
+            SetVar(), GetVar(), DelVar(), WebFetch()] + index_tools(cfg)
 
 
-def subagent_tools(kind: str = "research") -> list[Tool]:
+def subagent_tools(kind: str = "research", cfg: dict | None = None) -> list[Tool]:
     """Tools for a subagent: research = read-only, code = everything but nesting."""
     if kind == "code":
         return [ReadFile(), ReadSymbol(), RepoMap(), EditFile(), WriteFile(), ListDir(), Glob(),
-                Grep(), Bash(), RunTests(), WriteTests(), SetVar(), GetVar()]
-    return [cls() for cls in READ_ONLY_TOOLS] + [SetVar(), GetVar()]
+                Grep(), Bash(), RunTests(), WriteTests(), SetVar(), GetVar()] + index_tools(cfg)
+    return [cls() for cls in READ_ONLY_TOOLS] + [SetVar(), GetVar()] + index_tools(cfg)
 
 
 __all__ = ["Tool", "ToolContext", "ToolError", "truncate", "main_tools", "subagent_tools",

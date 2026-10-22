@@ -753,7 +753,7 @@ class Agent:
                                   snapshots=self.ctx.snapshots, deadline=self.ctx.deadline)
             steps = int(self.ctx.cfg["code_subagent_max_steps"] if kind == "code"
                         else self.ctx.cfg["subagent_max_steps"])
-            sub = Agent(self.llm, subagent_tools(kind), sub_ctx, sub_ui,
+            sub = Agent(self.llm, subagent_tools(kind, self.ctx.cfg), sub_ctx, sub_ui,
                         max_steps=steps, sub=True, sub_kind=kind)
             sub_ui.token = lambda t: None        # hide subagent prose, show only its tool calls
             sub_ui.think_token = lambda t: None

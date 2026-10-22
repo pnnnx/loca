@@ -103,7 +103,7 @@ class App:
         self.permissions = Permissions(self.cfg, interactive=not self.headless)
         self.ctx = ToolContext(cwd=self.cwd, cfg=self.cfg, ui=self.ui, permissions=self.permissions)
         self.mcp = MCPManager(self.cfg.get("mcp_servers", {}), self.ui) if self.cfg.get("mcp_servers") else None
-        tools = main_tools() + (self.mcp.tools() if self.mcp else [])
+        tools = main_tools(self.cfg) + (self.mcp.tools() if self.mcp else [])
         self.agent = Agent(self.llm, tools, self.ctx, self.ui, max_steps=self.cfg["max_steps"])
         self.ctx.spawn_subagent = self.agent.subagent_runner()
         self.ctx.refresh_system = self.agent.refresh_system
