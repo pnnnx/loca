@@ -6,6 +6,7 @@
     python3 bench/run.py --tasks fix_typo,write_test --keep
     python3 bench/run.py --verify-tasks         # проверить сами задачи, без модели
     python3 bench/run.py --out runs/9b.json --baseline runs/4b.json
+    python3 bench/run.py --set codeindex=true --set temperature=0 --out runs/B1.json   # группа B для A/B
 
 Без бенчмарка любое изменение промпта, набора инструментов или модели — гадание:
 на глаз «стало лучше» неотличимо от везения. Каждая задача выполняется в своей
@@ -34,15 +35,30 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 # ---------------------------------------------------------------- подготовка
-def materialize(task: dict, root: Path) -> None:
+def materialize(task: dict, root: Path, extra: dict | None = None) -> None:
     for rel, content in task["files"].items():
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-    if task.get("config"):
+    config = {**(task.get("config") or {}), **(extra or {})}
+    if config:
         (root / ".loca").mkdir(exist_ok=True)
         (root / ".loca" / "config.json").write_text(
-            json.dumps(task["config"], ensure_ascii=False), encoding="utf-8")
+            json.dumps(config, ensure_ascii=False), encoding="utf-8")
+
+
+def parse_set(items: list[str]) -> dict:
+    """--set KEY=VALUE -> {KEY: VALUE}; значение — JSON (true, 0, "x") или строка."""
+    out = {}
+    for item in items:
+        key, sep, raw = item.partition("=")
+        if not sep or not key.strip():
+            raise SystemExit(f"--set ждёт KEY=VALUE, получено {item!r}")
+        try:
+            out[key.strip()] = json.loads(raw)
+        except json.JSONDecodeError:
+            out[key.strip()] = raw
+    return out
 
 
 AGENT_DIRS = (".loca", ".loca_home", "__pycache__", ".pytest_cache")
@@ -115,7 +131,7 @@ def run_task(task: dict, args) -> dict:
     loca_home = Path(tempfile.mkdtemp(prefix=f"loca-home-{task['name']}-"))
     result = {"name": task["name"], "passed": False, "reason": "", "seconds": 0.0}
     try:
-        materialize(task, workspace)
+        materialize(task, workspace, getattr(args, "set_config", None))
         before = snapshot(workspace)
         stats_path = workspace / ".loca_stats.json"
         env = {**os.environ, "PYTHONPATH": str(REPO) + os.pathsep + os.environ.get("PYTHONPATH", ""),
@@ -333,11 +349,14 @@ def main(argv=None) -> int:
     p.add_argument("--only-failed", metavar="FILE", dest="only_failed",
                    help="прогнать только задачи, упавшие в этом JSON (можно тот же, что baseline)")
     p.add_argument("--keep", action="store_true", help="не удалять временные каталоги")
+    p.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", dest="set_items",
+                   help="добавить в .loca/config.json каждой задачи (A/B: --set codeindex=true)")
     p.add_argument("--show-output", action="store_true", help="печатать вывод агента для упавших")
     p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument("--list", action="store_true")
     p.add_argument("--verify-tasks", action="store_true", help="проверить задачи без модели")
     args = p.parse_args(argv)
+    args.set_config = parse_set(args.set_items)
 
     if args.list:
         for task in TASKS:
@@ -377,7 +396,8 @@ def main(argv=None) -> int:
     report(results, baseline)
     if args.out:
         payload = {"model": args.model or "(из конфига)", "ctx": args.ctx,
-                   "when": time.strftime("%Y-%m-%d %H:%M"), "results": results}
+                   "when": time.strftime("%Y-%m-%d %H:%M"), "config": args.set_config,
+                   "results": results}
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out).write_text(json.dumps(payload, ensure_ascii=False, indent=2),
                                   encoding="utf-8")

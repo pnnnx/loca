@@ -5,6 +5,19 @@
 
 ---
 
+## 2026-10-22 — стенд A/B: `bench/run.py --set` и `bench/ab.py` (ветка `beta/codeindex`, coder T-20)
+**Что:** `run.py --set KEY=VALUE` (повторяемый) дописывает ключи в `.loca/config.json` каждой задачи
+(`--set codeindex=true --set temperature=0`), конфиг прогона пишется в JSON. `bench/ab.py --a A*.json --b B*.json`:
+таблица pass@1, медиана шагов и tokens_out, ошибки инструментов, доля попыток с deps/impact/review_diff,
+попытки с tokens_out = 0 — и решение по правилу T-20 (B не хуже по pass@1 и −10 % шагов или токенов).
+**Как:** значения `--set` — JSON или строка; счётчики инструментов уже были в stats (`tools`). Одна попытка — один
+JSON, поэтому «2 попытки» — два прогона на группу. Есть tokens_out = 0 — замер недействителен.
+**Зачем:** T-20: A/B одной командой; репетиция стенда на v4, пока нет v5.
+**Проверка:** 133 теста (3 новых в `tests/test_bench_ab.py`); `run.py --verify-tasks` — 16 задач, 0 проблем.
+**Коммит:** `bench: --set для конфига задач и ab.py — сводка A/B (T-20)`
+
+---
+
 ## 2026-10-22 — баги: impact из подпапки, кэш индекса в git, лишние импорты (ветка `beta/codeindex`, coder T-22)
 **Что:** `_changed_files` берёт `git diff --relative` — из подпапки пути от cwd, как у `ls-files` (раньше `impact`
 без files промахивался). `.loca/index.json` скрыт от git через `.loca/.gitignore` (создаётся сам и прячет себя;
